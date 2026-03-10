@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1 - 2026-03-10
+
+- Redesigned the manager app settings window to a more native macOS-style interface with sidebar navigation (`Status`, `Actions`, `Preview Settings`) and grouped forms.
+- Added a custom app icon and icon generation scripts:
+  - `scripts/render_icon.swift`
+  - `scripts/generate_icon.sh`
+  - embedded icon bundle resource `preview/app/AppIcon.icns`
+- Added automated release packaging/publishing script `scripts/release.sh`:
+  - builds artifacts
+  - packages DMG + ZIP + SHA256
+  - creates/updates GitHub release assets
+  - enforces release preflight checks (branch `main`, clean worktree, synced with upstream)
+- Added `release/` to `.gitignore` so generated release artifacts are not tracked.
+- Updated README with:
+  - release automation usage
+  - GitHub Releases DMG download guidance
+  - unsigned app/Gatekeeper considerations for first launch.
+- Bumped app and preview extension versions to `0.2.1`.
+
 ## 0.2.0 - 2026-03-10
 
 - Reworked modern Quick Look preview parsing to use a structured Parquet footer parser instead of simple byte-pattern heuristics.
@@ -12,6 +31,8 @@ All notable changes to this project will be documented in this file.
 - Removed preview table truncation so all parsed columns are shown.
 - Hardened installer behavior and validation checks for preview app/extension bundle integrity.
 - Added `scripts/uninstall.sh` for clean user-level removal of importer and preview extension (with `--dry-run`).
+- Replaced minimal host app with a GUI manager app exposing `Install`, `Repair`, `Uninstall`, and preview settings.
+- Added preview settings integration (expand depth, show all vs limited rows, type display mode, path token filtering, font size).
 
 ## 0.1.0 - 2026-03-10
 

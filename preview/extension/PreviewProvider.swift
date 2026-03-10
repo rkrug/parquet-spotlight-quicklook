@@ -7,7 +7,8 @@ import UniformTypeIdentifiers
 final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     struct ColumnInfo {
         let name: String
-        let type: String
+        let logicalType: String
+        let physicalType: String
     }
 
     struct Metadata {
@@ -16,6 +17,24 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var footerLength: UInt32 = 0
         var rowCount: Int64 = 0
         var columns: [ColumnInfo] = []
+    }
+
+    private struct PreviewSettings {
+        var expandDepth = 1
+        var showAllColumns = true
+        var maxColumns = 500
+        var showPhysicalType = false
+        var hideListElement = true
+        var fontSize = 12.0
+    }
+
+    private struct PreviewSettingsData: Codable {
+        let expandDepth: Int
+        let showAllColumns: Bool
+        let maxColumns: Int
+        let showPhysicalType: Bool
+        let hideListElement: Bool
+        let fontSize: Double
     }
 
     private final class ColumnTreeNode {
@@ -620,11 +639,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             } else if hasName {
                 result.append(ColumnInfo(
                     name: nextPath.joined(separator: "."),
-                    type: parquetTypeLabel(
+                    logicalType: parquetLogicalTypeLabel(
                         physical: node.type,
                         converted: node.convertedType,
                         logical: node.logicalType
-                    )
+                    ),
+                    physicalType: parquetPhysicalTypeLabel(physical: node.type)
                 ))
             }
         }
@@ -674,7 +694,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
     }
 
-    private func parquetTypeLabel(physical: Int32?, converted: Int32?, logical: String?) -> String {
+    private func parquetLogicalTypeLabel(physical: Int32?, converted: Int32?, logical: String?) -> String {
         if let logical {
             if logical == "STRING" || logical == "UUID" || logical == "JSON" || logical == "BSON" {
                 return "string"
@@ -740,6 +760,20 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
     }
 
+    private func parquetPhysicalTypeLabel(physical: Int32?) -> String {
+        switch physical {
+        case 0: return "BOOLEAN"
+        case 1: return "INT32"
+        case 2: return "INT64"
+        case 3: return "INT96"
+        case 4: return "FLOAT"
+        case 5: return "DOUBLE"
+        case 6: return "BYTE_ARRAY"
+        case 7: return "FIXED_LEN_BYTE_ARRAY"
+        default: return "UNKNOWN"
+        }
+    }
+
     private func formatBytes(_ value: UInt64) -> String {
         let f = ByteCountFormatter()
         f.countStyle = .file
@@ -755,7 +789,37 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         return f.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 
-    private func buildDisplayRows(columns: ArraySlice<ColumnInfo>) -> [DisplayRow] {
+    private func loadSettings() -> PreviewSettings {
+        let settingsFile = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/ParquetPreview/settings.json")
+        if let data = try? Data(contentsOf: settingsFile),
+           let decoded = try? JSONDecoder().decode(PreviewSettingsData.self, from: data) {
+            return PreviewSettings(
+                expandDepth: max(0, min(decoded.expandDepth, 10)),
+                showAllColumns: decoded.showAllColumns,
+                maxColumns: max(1, decoded.maxColumns),
+                showPhysicalType: decoded.showPhysicalType,
+                hideListElement: decoded.hideListElement,
+                fontSize: max(9.0, min(decoded.fontSize, 24.0))
+            )
+        }
+
+        let defaults = UserDefaults(suiteName: "com.rkrug.parquetindexer.previewhost.preview") ?? .standard
+        var s = PreviewSettings()
+        if defaults.object(forKey: "expandDepth") != nil {
+            s.expandDepth = max(0, min(defaults.integer(forKey: "expandDepth"), 10))
+            s.showAllColumns = defaults.bool(forKey: "showAllColumns")
+            let maxCols = defaults.integer(forKey: "maxColumns")
+            s.maxColumns = maxCols > 0 ? maxCols : 500
+            s.showPhysicalType = defaults.bool(forKey: "showPhysicalType")
+            s.hideListElement = defaults.bool(forKey: "hideListElement")
+            let fs = defaults.double(forKey: "fontSize")
+            s.fontSize = fs > 0 ? fs : 12.0
+        }
+        return s
+    }
+
+    private func buildDisplayRows(columns: ArraySlice<ColumnInfo>, settings: PreviewSettings) -> [DisplayRow] {
         let root = ColumnTreeNode()
 
         for col in columns {
@@ -766,7 +830,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             var idx = 0
             while idx < parts.count {
                 let part = parts[idx]
-                if part == "list" || part == "element" {
+                if settings.hideListElement && (part == "list" || part == "element") {
                     idx += 1
                     continue
                 }
@@ -774,7 +838,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 let child = node.child(named: part)
                 let hasNext = (idx + 1) < parts.count
                 if !hasNext {
-                    child.type = col.type
+                    let renderedType = settings.showPhysicalType
+                        ? "\(col.logicalType) (\(col.physicalType))"
+                        : col.logicalType
+                    child.type = renderedType
                     node = child
                     idx += 1
                     continue
@@ -783,7 +850,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 if (idx + 2) < parts.count && parts[idx + 1] == "list" && parts[idx + 2] == "element" {
                     child.groupType = "list"
                     if (idx + 3) >= parts.count {
-                        child.type = "list<\(col.type)>"
+                        let renderedType = settings.showPhysicalType
+                            ? "\(col.logicalType) (\(col.physicalType))"
+                            : col.logicalType
+                        child.type = "list<\(renderedType)>"
                     }
                     node = child
                     idx += 3
@@ -844,8 +914,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private func renderHTML(path: String, metadata: Metadata) -> String {
-        let showCount = metadata.columns.count
-        let displayRows = buildDisplayRows(columns: metadata.columns.prefix(showCount))
+        let settings = loadSettings()
+        let showCount = settings.showAllColumns
+            ? metadata.columns.count
+            : min(metadata.columns.count, max(1, settings.maxColumns))
+        let hidden = max(0, metadata.columns.count - showCount)
+        let displayRows = buildDisplayRows(columns: metadata.columns.prefix(showCount), settings: settings)
 
         var rows = ""
         if showCount == 0 {
@@ -862,6 +936,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                     : "<span class=\"spacer\"></span>"
                 rows += "<tr id=\"row-\(r.id)\" class=\"\(hiddenClass)\"\(parentAttr)><td>\(idx + 1)</td><td class=\"\(nameClass)\" style=\"padding-left:\(indentPx + 8)px\">\(toggle)\(esc(r.name))</td><td>\(typeText)</td></tr>"
             }
+            if hidden > 0 {
+                rows += "<tr><td colspan=\"3\" class=\"muted\">+ \(hidden) more columns not shown (change in Parquet Manager settings)</td></tr>"
+            }
         }
 
         return """
@@ -870,7 +947,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         <head>
           <meta charset=\"utf-8\" />
           <style>
-            body{font-family:-apple-system,system-ui,sans-serif;margin:18px;color:#1f2937}
+            body{font-family:-apple-system,system-ui,sans-serif;margin:18px;color:#1f2937;font-size:\(max(9.0, min(settings.fontSize, 24.0)))px}
             h1{font-size:20px;margin:0 0 10px}
             .muted{color:#6b7280;font-size:12px}
             .meta{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin:14px 0}
@@ -912,6 +989,25 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
               btn.textContent='▾';
               childRows(id).forEach(function(row){ row.classList.remove('hidden'); });
             }
+            function expandToDepth(depth){
+              if(depth <= 0){ return; }
+              for(let d=0; d<depth; d++){
+                const current=Array.from(document.querySelectorAll('button.toggle[data-expanded=\"false\"]'));
+                if(current.length===0){ break; }
+                current.forEach(function(btn){
+                  const id=parseInt(btn.id.replace('btn-',''),10);
+                  const row=document.getElementById('row-'+id);
+                  if(!row){ return; }
+                  const parent=row.getAttribute('data-parent');
+                  if(parent){
+                    const prow=document.getElementById('row-'+parent);
+                    if(prow && prow.classList.contains('hidden')){ return; }
+                  }
+                  toggleNode(id);
+                });
+              }
+            }
+            window.addEventListener('DOMContentLoaded', function(){ expandToDepth(\(settings.expandDepth)); });
           </script>
         </head>
         <body>
