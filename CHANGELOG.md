@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 - 2026-03-10
+
+- Reworked modern Quick Look preview parsing to use a structured Parquet footer parser instead of simple byte-pattern heuristics.
+- Improved row and column extraction reliability for nested schemas.
+- Added Arrow-style logical type display in preview (for example `string`, `bool`, `date32[day]`, `timestamp[...]`) rather than mostly physical storage labels.
+- Changed preview schema rendering to hierarchical tree display with indentation and group rows.
+- Added collapsible schema nodes (`▸` / `▾`) so nested fields are hidden by default and can be expanded on demand.
+- Removed preview table truncation so all parsed columns are shown.
+- Hardened installer behavior and validation checks for preview app/extension bundle integrity.
+- Added `scripts/uninstall.sh` for clean user-level removal of importer and preview extension (with `--dry-run`).
+
 ## 0.1.0 - 2026-03-10
 
 - Added a Spotlight `.mdimporter` for `.parquet` files.
