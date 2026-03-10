@@ -13,6 +13,9 @@ This project provides:
   - hierarchical schema tree (collapsible groups)
   - full parsed column list (no preview truncation)
   - Arrow-style logical scalar type labels where available
+- a small GUI manager app (`ParquetPreviewHost.app`) with:
+  - `Install`, `Repair`, and `Uninstall` actions
+  - preview rendering settings (expand depth, row limits, type display, font size)
 
 The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), does not parse row contents, and writes Spotlight metadata for search.
 
@@ -50,6 +53,48 @@ The build script also:
 - clears extended attributes
 - signs the bundle ad-hoc (required for reliable loading)
 
+## Release Packaging
+
+Automate build + DMG + GitHub release upload:
+
+```bash
+./scripts/release.sh v0.2.1
+```
+
+What it does:
+
+- runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
+- creates `release/Parquet-Spotlight-0.2.1.dmg`
+- creates `release/Parquet-Spotlight-0.2.1.zip`
+- creates `release/Parquet-Spotlight-0.2.1.dmg.sha256`
+- creates or updates the GitHub release tag and uploads those assets
+- verifies release preflight before packaging:
+  - current branch is `main`
+  - working tree is clean
+  - local `main` is fully synced with upstream
+
+Optional flags:
+
+- `--notes <file>`: use a custom release notes file
+- `--skip-gh`: package artifacts only, do not call GitHub CLI
+
+## GitHub Release Install (DMG)
+
+Download the latest DMG from:
+
+- [GitHub Releases](https://github.com/rkrug/parquet-spotlight-quicklook/releases)
+
+Typical asset name:
+
+- `Parquet-Spotlight-<version>.dmg`
+
+Unsigned app note (important):
+
+- Releases are currently unsigned (ad-hoc signed for local loading, but not Apple Developer ID notarized).
+- On first launch, macOS may block the app with a security warning.
+- If blocked, right-click the app and choose `Open`, or go to:
+  - `System Settings -> Privacy & Security -> Open Anyway`
+
 ## Install
 
 Install for current user:
@@ -62,6 +107,13 @@ This installs and registers:
 
 - `~/Library/Spotlight/Parquet.mdimporter`
 - `~/Applications/ParquetPreviewHost.app` (embedded modern preview extension)
+
+Use `ParquetPreviewHost.app` from `~/Applications` to:
+
+- install importer payload from inside the app bundle
+- repair registration and refresh caches
+- uninstall importer + preview app
+- change preview settings used by Quick Look
 
 ## Uninstall
 

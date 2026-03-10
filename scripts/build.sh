@@ -14,13 +14,14 @@ APP_BUNDLE_DIR="$BUILD_DIR/ParquetPreviewHost.app"
 APP_CONTENTS_DIR="$APP_BUNDLE_DIR/Contents"
 APP_MACOS_DIR="$APP_CONTENTS_DIR/MacOS"
 APP_PLUGINS_DIR="$APP_CONTENTS_DIR/PlugIns"
+APP_RESOURCES_DIR="$APP_CONTENTS_DIR/Resources"
 
 APPEX_DIR="$APP_PLUGINS_DIR/ParquetPreview.appex"
 APPEX_CONTENTS_DIR="$APPEX_DIR/Contents"
 APPEX_MACOS_DIR="$APPEX_CONTENTS_DIR/MacOS"
 
 rm -rf "$MD_BUNDLE_DIR" "$APP_BUNDLE_DIR"
-mkdir -p "$MD_MACOS_DIR" "$MD_RESOURCES_DIR" "$APP_MACOS_DIR" "$APPEX_MACOS_DIR"
+mkdir -p "$MD_MACOS_DIR" "$MD_RESOURCES_DIR" "$APP_MACOS_DIR" "$APP_RESOURCES_DIR" "$APPEX_MACOS_DIR"
 
 SDK_PATH="$(xcrun --show-sdk-path)"
 SWIFT_MODULE_CACHE="$BUILD_DIR/swift-module-cache"
@@ -42,17 +43,21 @@ clang \
 cp "$ROOT_DIR/plist/Info.plist" "$MD_BUNDLE_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/resources/schema.xml" "$MD_RESOURCES_DIR/schema.xml"
 
-# Build minimal host app for modern preview extension discovery
-clang \
-  -isysroot "$SDK_PATH" \
-  -mmacosx-version-min=12.0 \
-  -Wall -Wextra -Werror \
-  -O2 \
-  "$ROOT_DIR/preview/app/main.m" \
-  -framework Cocoa \
+# Build host app with GUI manager (install/repair/uninstall/settings)
+swiftc \
+  -parse-as-library \
+  -module-name ParquetPreviewHost \
+  -module-cache-path "$SWIFT_MODULE_CACHE" \
+  -O \
+  "$ROOT_DIR/preview/app/AppMain.swift" \
+  -framework AppKit \
+  -framework Foundation \
+  -framework SwiftUI \
   -o "$APP_MACOS_DIR/ParquetPreviewHost"
 
 cp "$ROOT_DIR/preview/app/Info.plist" "$APP_CONTENTS_DIR/Info.plist"
+cp "$ROOT_DIR/preview/app/AppIcon.icns" "$APP_RESOURCES_DIR/AppIcon.icns"
+cp -R "$MD_BUNDLE_DIR" "$APP_RESOURCES_DIR/Parquet.mdimporter"
 
 # Build extension entry point object (NSExtensionMain)
 clang \
