@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+
+# macOS
+.DS_Store
+
+# Local temp files
+*.tmp
+*.swp
+

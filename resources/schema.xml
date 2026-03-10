@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schema version="1.0" xmlns="http://www.apple.com/metadata"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.apple.com/metadata file:///System/Library/Frameworks/CoreServices.framework/Frameworks/Metadata.framework/Resources/MetadataSchema.xsd">
+  <note>
+    Custom Spotlight attributes for Apache Parquet files.
+  </note>
+  <attributes>
+    <attribute name="com_rkrug_parquet_is_valid" type="CFBoolean"/>
+    <attribute name="com_rkrug_parquet_file_size" type="CFNumber"/>
+    <attribute name="com_rkrug_parquet_footer_length" type="CFNumber"/>
+    <attribute name="com_rkrug_parquet_row_count" type="CFNumber"/>
+    <attribute name="com_rkrug_parquet_column_count" type="CFNumber"/>
+    <attribute name="com_rkrug_parquet_columns" multivalued="true" type="CFString"/>
+  </attributes>
+</schema>
