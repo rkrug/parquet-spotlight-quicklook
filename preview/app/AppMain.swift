@@ -45,7 +45,8 @@ private final class AppModel: ObservableObject {
     private let fm = FileManager.default
     private let spotlightDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Spotlight/Parquet.mdimporter")
     private let legacyQuickLookDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/QuickLook/Parquet.qlgenerator")
-    private let appDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/ParquetPreviewHost.app")
+    private let userAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/ParquetPreviewHost.app")
+    private let systemAppDst = URL(fileURLWithPath: "/Applications/ParquetPreviewHost.app")
     private let previewContainerSettings = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Containers/com.rkrug.parquetindexer.previewhost.preview/Data/Library/Application Support/ParquetPreview/settings.json")
 
@@ -128,11 +129,16 @@ private final class AppModel: ObservableObject {
     }
 
     func refreshStatus() {
-        let previewBundle = appDst.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex")
+        let runningApp = Bundle.main.bundleURL
+        let candidateApps = [runningApp, userAppDst, systemAppDst]
+        let appInApplications = candidateApps.contains { isAppInApplications($0) }
+        let previewFound = candidateApps.contains {
+            fm.fileExists(atPath: $0.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex").path)
+        }
         let info = StatusInfo(
             importerInstalled: fm.fileExists(atPath: spotlightDst.path),
-            appInstalledInApplications: fm.fileExists(atPath: appDst.path),
-            previewBundlePresent: fm.fileExists(atPath: previewBundle.path)
+            appInstalledInApplications: appInApplications,
+            previewBundlePresent: previewFound
         )
         importerInstalled = info.importerInstalled
         appInstalledInApplications = info.appInstalledInApplications
@@ -173,9 +179,11 @@ private final class AppModel: ObservableObject {
 
     func uninstall() {
         do {
-            let appex = appDst.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex")
-            if fm.fileExists(atPath: appex.path) {
-                run("/usr/bin/pluginkit", ["-r", appex.path])
+            for app in [Bundle.main.bundleURL, userAppDst, systemAppDst] {
+                let appex = app.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex")
+                if fm.fileExists(atPath: appex.path) {
+                    run("/usr/bin/pluginkit", ["-r", appex.path])
+                }
             }
             if fm.fileExists(atPath: spotlightDst.path) {
                 try fm.removeItem(at: spotlightDst)
@@ -210,6 +218,17 @@ private final class AppModel: ObservableObject {
         }
         run("/usr/bin/qlmanage", ["-r"])
         run("/usr/bin/qlmanage", ["-r", "cache"])
+    }
+
+    private func isAppInApplications(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath()
+        if !fm.fileExists(atPath: resolved.path) {
+            return false
+        }
+
+        let userApplications = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications").path + "/"
+        let systemApplications = "/Applications/"
+        return resolved.path.hasPrefix(userApplications) || resolved.path.hasPrefix(systemApplications)
     }
 
     @discardableResult
@@ -275,7 +294,7 @@ private struct ContentView: View {
         Form {
             Section("Component Status") {
                 statusRow("Spotlight importer", model.importerInstalled)
-                statusRow("Manager app in ~/Applications", model.appInstalledInApplications)
+                statusRow("Manager app in /Applications or ~/Applications", model.appInstalledInApplications)
                 statusRow("Quick Look preview extension", model.previewBundlePresent)
             }
 

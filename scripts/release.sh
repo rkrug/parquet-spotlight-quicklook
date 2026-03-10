@@ -6,9 +6,9 @@ usage() {
 Usage: ./scripts/release.sh <tag> [--notes <file>] [--skip-gh]
 
 Examples:
-  ./scripts/release.sh v0.2.1
-  ./scripts/release.sh v0.2.1 --notes /tmp/release-notes.md
-  ./scripts/release.sh v0.2.1 --skip-gh
+  ./scripts/release.sh v0.2.2
+  ./scripts/release.sh v0.2.2 --notes /tmp/release-notes.md
+  ./scripts/release.sh v0.2.2 --skip-gh
 
 Behavior:
   1) Generates app icon and builds artifacts
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: tag must look like v0.2.1 (or 0.2.1)" >&2
+  echo "error: tag must look like v0.2.2 (or 0.2.2)" >&2
   exit 2
 fi
 

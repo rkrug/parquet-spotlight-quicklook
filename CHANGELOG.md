@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.2 - 2026-03-10
+
+- Fixed manager status detection so app installation is recognized in both `/Applications` and `~/Applications`.
+- Fixed false-red Quick Look preview extension status when the extension is present and working outside the previously hardcoded path.
+- Updated uninstall/status path handling to check all relevant app locations (running bundle, user Applications, system Applications).
+
 ## 0.2.1 - 2026-03-10
 
 - Redesigned the manager app settings window to a more native macOS-style interface with sidebar navigation (`Status`, `Actions`, `Preview Settings`) and grouped forms.
