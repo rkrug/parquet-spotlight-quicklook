@@ -1,5 +1,11 @@
 # parquet_indexer (Spotlight Importer for `.parquet`)
 
+> [!WARNING]
+> **This repository was written completely using Codex.**
+> **Model:** GPT-5 (Codex coding agent)
+> **Version:** Codex GPT-5 session build (2026-03-10)
+> It works for me, but I take no guarantee if it works for you.
+
 This project provides:
 
 - a macOS Spotlight importer (`.mdimporter`) for Parquet metadata indexing
