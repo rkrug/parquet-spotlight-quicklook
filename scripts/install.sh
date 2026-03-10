@@ -20,11 +20,28 @@ fi
 
 mkdir -p "$HOME/Library/Spotlight" "$HOME/Applications"
 rm -rf "$BUNDLE_DST" "$APP_DST" "$HOME/Library/QuickLook/Parquet.qlgenerator"
-ditto "$BUNDLE_SRC" "$BUNDLE_DST"
-ditto "$APP_SRC" "$APP_DST"
+mkdir -p "$BUNDLE_DST" "$APP_DST"
+rsync -a --delete "$BUNDLE_SRC/" "$BUNDLE_DST/"
+rsync -a --delete "$APP_SRC/" "$APP_DST/"
 
 xattr -cr "$BUNDLE_DST"
 xattr -cr "$APP_DST"
+
+if [[ ! -f "$APPEX_DST/Contents/Info.plist" ]]; then
+  # Retry once: some systems intermittently expose incomplete copied app bundles
+  # immediately after sync when queried by path.
+  rsync -a --delete "$APP_SRC/" "$APP_DST/"
+fi
+
+if [[ ! -f "$APPEX_DST/Contents/Info.plist" ]]; then
+  echo "FAIL: Installed preview extension is incomplete (missing Info.plist): $APPEX_DST" >&2
+  exit 1
+fi
+
+if ! codesign --verify --deep --strict "$APP_DST" >/dev/null 2>&1; then
+  echo "FAIL: Installed preview host app failed code signature verification: $APP_DST" >&2
+  exit 1
+fi
 
 mdimport -r "$BUNDLE_DST"
 pluginkit -a "$APPEX_DST" >/dev/null 2>&1 || true

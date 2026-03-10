@@ -18,9 +18,37 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var columns: [ColumnInfo] = []
     }
 
+    private final class ColumnTreeNode {
+        var children: [String: ColumnTreeNode] = [:]
+        var order: [String] = []
+        var type: String?
+        var groupType: String?
+
+        func child(named name: String) -> ColumnTreeNode {
+            if let existing = children[name] {
+                return existing
+            }
+            let node = ColumnTreeNode()
+            children[name] = node
+            order.append(name)
+            return node
+        }
+    }
+
+    private struct DisplayRow {
+        let id: Int
+        let parentID: Int?
+        let name: String
+        let type: String
+        let indent: Int
+        let isGroup: Bool
+    }
+
     private struct SchemaElement {
         let name: String
         let type: Int32?
+        let convertedType: Int32?
+        let logicalType: String?
         let numChildren: Int
     }
 
@@ -190,6 +218,17 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 throw ParserError.invalidData
             }
         }
+
+        mutating func readBoolForType(_ type: UInt8) throws -> Bool {
+            switch type {
+            case CompactType.booleanTrue.rawValue:
+                return true
+            case CompactType.booleanFalse.rawValue:
+                return false
+            default:
+                return (try readInt64ForType(type)) != 0
+            }
+        }
     }
 
     func providePreview(for request: QLFilePreviewRequest,
@@ -311,6 +350,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var lastFieldID: Int16 = 0
         var name = ""
         var type: Int32?
+        var convertedType: Int32?
+        var logicalType: String?
         var numChildren = 0
 
         while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
@@ -320,6 +361,13 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 if v >= Int64(Int32.min), v <= Int64(Int32.max) {
                     type = Int32(v)
                 }
+            case 6:
+                let v = try parser.readInt64ForType(fieldType)
+                if v >= Int64(Int32.min), v <= Int64(Int32.max) {
+                    convertedType = Int32(v)
+                }
+            case 10:
+                logicalType = try parseLogicalType(parser: &parser, fieldType: fieldType)
             case 4:
                 guard fieldType == CompactType.binary.rawValue else {
                     try parser.skipValue(type: fieldType)
@@ -341,7 +389,178 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             }
         }
 
-        return SchemaElement(name: name, type: type, numChildren: numChildren)
+        return SchemaElement(
+            name: name,
+            type: type,
+            convertedType: convertedType,
+            logicalType: logicalType,
+            numChildren: numChildren
+        )
+    }
+
+    private func parseLogicalType(parser: inout CompactParser, fieldType: UInt8) throws -> String? {
+        guard fieldType == CompactType.struct.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return nil
+        }
+
+        var lastFieldID: Int16 = 0
+        var label: String?
+
+        while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            switch fieldID {
+            case 1:
+                label = "STRING"
+                try parser.skipValue(type: nestedType)
+            case 2:
+                label = "MAP"
+                try parser.skipValue(type: nestedType)
+            case 3:
+                label = "LIST"
+                try parser.skipValue(type: nestedType)
+            case 4:
+                label = "ENUM"
+                try parser.skipValue(type: nestedType)
+            case 5:
+                let d = try parseDecimalLogicalType(parser: &parser, fieldType: nestedType)
+                label = d ?? "DECIMAL"
+            case 6:
+                label = "DATE"
+                try parser.skipValue(type: nestedType)
+            case 7:
+                let t = try parseTimeLikeLogicalType(parser: &parser, fieldType: nestedType, name: "TIME")
+                label = t ?? "TIME"
+            case 8:
+                let t = try parseTimeLikeLogicalType(parser: &parser, fieldType: nestedType, name: "TIMESTAMP")
+                label = t ?? "TIMESTAMP"
+            case 10:
+                let i = try parseIntLogicalType(parser: &parser, fieldType: nestedType)
+                label = i ?? "INT"
+            case 11:
+                label = "UNKNOWN"
+                try parser.skipValue(type: nestedType)
+            case 12:
+                label = "JSON"
+                try parser.skipValue(type: nestedType)
+            case 13:
+                label = "BSON"
+                try parser.skipValue(type: nestedType)
+            case 14:
+                label = "UUID"
+                try parser.skipValue(type: nestedType)
+            default:
+                try parser.skipValue(type: nestedType)
+            }
+        }
+
+        return label
+    }
+
+    private func parseDecimalLogicalType(parser: inout CompactParser, fieldType: UInt8) throws -> String? {
+        guard fieldType == CompactType.struct.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return nil
+        }
+
+        var lastFieldID: Int16 = 0
+        var scale: Int64?
+        var precision: Int64?
+
+        while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            switch fieldID {
+            case 1:
+                scale = try parser.readInt64ForType(nestedType)
+            case 2:
+                precision = try parser.readInt64ForType(nestedType)
+            default:
+                try parser.skipValue(type: nestedType)
+            }
+        }
+
+        if let p = precision, let s = scale {
+            return "DECIMAL(\(p),\(s))"
+        }
+        return "DECIMAL"
+    }
+
+    private func parseIntLogicalType(parser: inout CompactParser, fieldType: UInt8) throws -> String? {
+        guard fieldType == CompactType.struct.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return nil
+        }
+
+        var lastFieldID: Int16 = 0
+        var bitWidth: Int64?
+        var isSigned: Bool?
+
+        while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            switch fieldID {
+            case 1:
+                bitWidth = try parser.readInt64ForType(nestedType)
+            case 2:
+                isSigned = try parser.readBoolForType(nestedType)
+            default:
+                try parser.skipValue(type: nestedType)
+            }
+        }
+
+        guard let bw = bitWidth else { return "INT" }
+        if let signed = isSigned {
+            return signed ? "INT\(bw)" : "UINT\(bw)"
+        }
+        return "INT\(bw)"
+    }
+
+    private func parseTimeLikeLogicalType(parser: inout CompactParser, fieldType: UInt8, name: String) throws -> String? {
+        guard fieldType == CompactType.struct.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return nil
+        }
+
+        var lastFieldID: Int16 = 0
+        var unit = "UNKNOWN"
+        var adjusted = false
+
+        while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            switch fieldID {
+            case 1:
+                adjusted = try parser.readBoolForType(nestedType)
+            case 2:
+                unit = try parseTimeUnit(parser: &parser, fieldType: nestedType)
+            default:
+                try parser.skipValue(type: nestedType)
+            }
+        }
+
+        return "\(name)_\(unit)\(adjusted ? "_UTC" : "")"
+    }
+
+    private func parseTimeUnit(parser: inout CompactParser, fieldType: UInt8) throws -> String {
+        guard fieldType == CompactType.struct.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return "UNKNOWN"
+        }
+
+        var lastFieldID: Int16 = 0
+        var unit = "UNKNOWN"
+
+        while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            switch fieldID {
+            case 1:
+                unit = "MILLIS"
+                try parser.skipValue(type: nestedType)
+            case 2:
+                unit = "MICROS"
+                try parser.skipValue(type: nestedType)
+            case 3:
+                unit = "NANOS"
+                try parser.skipValue(type: nestedType)
+            default:
+                try parser.skipValue(type: nestedType)
+            }
+        }
+
+        return unit
     }
 
     private func parseRowGroups(parser: inout CompactParser, fieldType: UInt8) throws -> Int64 {
@@ -401,7 +620,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             } else if hasName {
                 result.append(ColumnInfo(
                     name: nextPath.joined(separator: "."),
-                    type: physicalTypeName(node.type)
+                    type: parquetTypeLabel(
+                        physical: node.type,
+                        converted: node.convertedType,
+                        logical: node.logicalType
+                    )
                 ))
             }
         }
@@ -422,19 +645,193 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         return result
     }
 
-    private func physicalTypeName(_ t: Int32?) -> String {
-        guard let t else { return "UNKNOWN" }
+    private func convertedTypeName(_ t: Int32?) -> String? {
+        guard let t else { return nil }
         switch t {
-        case 0: return "BOOLEAN"
-        case 1: return "INT32"
-        case 2: return "INT64"
-        case 3: return "INT96"
-        case 4: return "FLOAT"
-        case 5: return "DOUBLE"
-        case 6: return "BYTE_ARRAY"
-        case 7: return "FIXED_LEN_BYTE_ARRAY"
-        default: return "UNKNOWN"
+        case 0: return "UTF8"
+        case 1: return "MAP"
+        case 2: return "MAP_KEY_VALUE"
+        case 3: return "LIST"
+        case 5: return "ENUM"
+        case 6: return "DECIMAL"
+        case 7: return "DATE"
+        case 8: return "TIME_MILLIS"
+        case 9: return "TIME_MICROS"
+        case 10: return "TIMESTAMP_MILLIS"
+        case 11: return "TIMESTAMP_MICROS"
+        case 12: return "UINT_8"
+        case 13: return "UINT_16"
+        case 14: return "UINT_32"
+        case 15: return "UINT_64"
+        case 16: return "INT_8"
+        case 17: return "INT_16"
+        case 18: return "INT_32"
+        case 19: return "INT_64"
+        case 20: return "JSON"
+        case 21: return "BSON"
+        case 22: return "INTERVAL"
+        default: return nil
         }
+    }
+
+    private func parquetTypeLabel(physical: Int32?, converted: Int32?, logical: String?) -> String {
+        if let logical {
+            if logical == "STRING" || logical == "UUID" || logical == "JSON" || logical == "BSON" {
+                return "string"
+            }
+            if logical == "DATE" {
+                return "date32[day]"
+            }
+            if logical.hasPrefix("TIMESTAMP_MILLIS") {
+                return "timestamp[ms]"
+            }
+            if logical.hasPrefix("TIMESTAMP_MICROS") {
+                return "timestamp[us]"
+            }
+            if logical.hasPrefix("TIMESTAMP_NANOS") {
+                return "timestamp[ns]"
+            }
+            if logical.hasPrefix("TIME_MILLIS") {
+                return "time32[ms]"
+            }
+            if logical.hasPrefix("TIME_MICROS") {
+                return "time64[us]"
+            }
+            if logical.hasPrefix("TIME_NANOS") {
+                return "time64[ns]"
+            }
+            if logical.hasPrefix("INT") || logical.hasPrefix("UINT") || logical.hasPrefix("DECIMAL") {
+                return logical.lowercased()
+            }
+        }
+
+        if let converted = convertedTypeName(converted) {
+            switch converted {
+            case "UTF8": return "string"
+            case "DATE": return "date32[day]"
+            case "TIMESTAMP_MILLIS": return "timestamp[ms]"
+            case "TIMESTAMP_MICROS": return "timestamp[us]"
+            case "TIME_MILLIS": return "time32[ms]"
+            case "TIME_MICROS": return "time64[us]"
+            case "INT_8": return "int8"
+            case "INT_16": return "int16"
+            case "INT_32": return "int32"
+            case "INT_64": return "int64"
+            case "UINT_8": return "uint8"
+            case "UINT_16": return "uint16"
+            case "UINT_32": return "uint32"
+            case "UINT_64": return "uint64"
+            case "DECIMAL": return "decimal"
+            case "JSON", "BSON": return "string"
+            default: break
+            }
+        }
+
+        switch physical {
+        case 0: return "bool"
+        case 1: return "int32"
+        case 2: return "int64"
+        case 3: return "int96"
+        case 4: return "float"
+        case 5: return "double"
+        case 6: return "binary"
+        case 7: return "binary"
+        default: return "unknown"
+        }
+    }
+
+    private func formatBytes(_ value: UInt64) -> String {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.includesUnit = true
+        f.includesCount = true
+        f.isAdaptive = true
+        return f.string(fromByteCount: Int64(bitPattern: value))
+    }
+
+    private func formatInt(_ value: Int64) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func buildDisplayRows(columns: ArraySlice<ColumnInfo>) -> [DisplayRow] {
+        let root = ColumnTreeNode()
+
+        for col in columns {
+            let parts = col.name.split(separator: ".").map(String.init)
+            if parts.isEmpty { continue }
+
+            var node = root
+            var idx = 0
+            while idx < parts.count {
+                let part = parts[idx]
+                if part == "list" || part == "element" {
+                    idx += 1
+                    continue
+                }
+
+                let child = node.child(named: part)
+                let hasNext = (idx + 1) < parts.count
+                if !hasNext {
+                    child.type = col.type
+                    node = child
+                    idx += 1
+                    continue
+                }
+
+                if (idx + 2) < parts.count && parts[idx + 1] == "list" && parts[idx + 2] == "element" {
+                    child.groupType = "list"
+                    if (idx + 3) >= parts.count {
+                        child.type = "list<\(col.type)>"
+                    }
+                    node = child
+                    idx += 3
+                } else {
+                    if child.groupType == nil {
+                        child.groupType = "struct"
+                    }
+                    node = child
+                    idx += 1
+                }
+            }
+        }
+
+        var rows: [DisplayRow] = []
+        var nextID = 1
+
+        func walk(node: ColumnTreeNode, depth: Int, parentID: Int?) {
+            for name in node.order {
+                guard let child = node.children[name] else { continue }
+                let isLeaf = child.children.isEmpty
+                let rowID = nextID
+                nextID += 1
+                if isLeaf {
+                    rows.append(DisplayRow(
+                        id: rowID,
+                        parentID: parentID,
+                        name: name,
+                        type: child.type ?? "unknown",
+                        indent: depth,
+                        isGroup: false
+                    ))
+                } else {
+                    let gtype = child.groupType ?? "struct"
+                    rows.append(DisplayRow(
+                        id: rowID,
+                        parentID: parentID,
+                        name: name,
+                        type: gtype,
+                        indent: depth,
+                        isGroup: true
+                    ))
+                    walk(node: child, depth: depth + 1, parentID: rowID)
+                }
+            }
+        }
+
+        walk(node: root, depth: 0, parentID: nil)
+        return rows
     }
 
     private func esc(_ s: String) -> String {
@@ -447,19 +844,23 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private func renderHTML(path: String, metadata: Metadata) -> String {
-        let showCount = min(metadata.columns.count, 120)
-        let hidden = max(0, metadata.columns.count - showCount)
+        let showCount = metadata.columns.count
+        let displayRows = buildDisplayRows(columns: metadata.columns.prefix(showCount))
 
         var rows = ""
         if showCount == 0 {
             rows += "<tr><td colspan=\"3\" class=\"muted\">No columns parsed from footer metadata.</td></tr>"
         } else {
-            for (idx, c) in metadata.columns.prefix(showCount).enumerated() {
-                let n = c.name.count > 56 ? String(c.name.prefix(53)) + "..." : c.name
-                rows += "<tr><td>\(idx + 1)</td><td>\(esc(n))</td><td>\(esc(c.type))</td></tr>"
-            }
-            if hidden > 0 {
-                rows += "<tr><td colspan=\"3\" class=\"muted\">+ \(hidden) more columns not shown</td></tr>"
+            for (idx, r) in displayRows.enumerated() {
+                let indentPx = r.indent * 18
+                let nameClass = r.isGroup ? "group" : "field"
+                let typeText = esc(r.type)
+                let hiddenClass = (r.parentID == nil) ? "" : " hidden"
+                let parentAttr = (r.parentID == nil) ? "" : " data-parent=\"\(r.parentID!)\""
+                let toggle = r.isGroup
+                    ? "<button id=\"btn-\(r.id)\" class=\"toggle\" data-expanded=\"false\" onclick=\"toggleNode(\(r.id));return false;\">▸</button>"
+                    : "<span class=\"spacer\"></span>"
+                rows += "<tr id=\"row-\(r.id)\" class=\"\(hiddenClass)\"\(parentAttr)><td>\(idx + 1)</td><td class=\"\(nameClass)\" style=\"padding-left:\(indentPx + 8)px\">\(toggle)\(esc(r.name))</td><td>\(typeText)</td></tr>"
             }
         }
 
@@ -479,7 +880,39 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             table{width:100%;border-collapse:collapse;font-size:12px}
             th,td{padding:7px 8px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
             th{background:#f8fafc;font-weight:600}
+            td.group{font-weight:600;color:#374151}
+            td.field{color:#1f2937}
+            tr.hidden{display:none}
+            .toggle{width:16px;height:16px;border:none;border-radius:3px;background:transparent;color:#475569;font-size:13px;line-height:14px;cursor:pointer;margin-right:6px;padding:0;vertical-align:middle}
+            .toggle:hover{background:#e5e7eb;color:#111827}
+            .spacer{display:inline-block;width:18px;margin-right:6px}
           </style>
+          <script>
+            function childRows(id){
+              return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
+            }
+            function collapseRec(id){
+              const btn=document.getElementById('btn-'+id);
+              if(btn){btn.dataset.expanded='false';btn.textContent='▸';}
+              childRows(id).forEach(function(row){
+                row.classList.add('hidden');
+                const cid=parseInt(row.id.replace('row-',''),10);
+                collapseRec(cid);
+              });
+            }
+            function toggleNode(id){
+              const btn=document.getElementById('btn-'+id);
+              if(!btn){return;}
+              const expanded=(btn.dataset.expanded==='true');
+              if(expanded){
+                collapseRec(id);
+                return;
+              }
+              btn.dataset.expanded='true';
+              btn.textContent='▾';
+              childRows(id).forEach(function(row){ row.classList.remove('hidden'); });
+            }
+          </script>
         </head>
         <body>
           <h1>Parquet Preview</h1>
@@ -487,10 +920,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
 
           <div class=\"meta\">
             <div class=\"card\"><div class=\"label\">Valid</div><div class=\"val\">\(metadata.valid ? "Yes" : "No")</div></div>
-            <div class=\"card\"><div class=\"label\">File Size</div><div class=\"val\">\(metadata.fileSize) B</div></div>
-            <div class=\"card\"><div class=\"label\">Footer</div><div class=\"val\">\(metadata.footerLength) B</div></div>
-            <div class=\"card\"><div class=\"label\">Rows</div><div class=\"val\">\(metadata.rowCount)</div></div>
-            <div class=\"card\"><div class=\"label\">Columns</div><div class=\"val\">\(metadata.columns.count)</div></div>
+            <div class=\"card\"><div class=\"label\">File Size</div><div class=\"val\">\(esc(formatBytes(metadata.fileSize)))</div></div>
+            <div class=\"card\"><div class=\"label\">Footer</div><div class=\"val\">\(esc(formatBytes(UInt64(metadata.footerLength))))</div></div>
+            <div class=\"card\"><div class=\"label\">Rows</div><div class=\"val\">\(esc(formatInt(metadata.rowCount)))</div></div>
+            <div class=\"card\"><div class=\"label\">Columns</div><div class=\"val\">\(esc(formatInt(Int64(metadata.columns.count))))</div></div>
           </div>
 
           <table>

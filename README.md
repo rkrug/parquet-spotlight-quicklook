@@ -1,9 +1,18 @@
 # parquet_indexer (Spotlight Importer for `.parquet`)
 
+> [!WARNING]
+> **This repository was written completely using Codex.**
+> **Model:** GPT-5 (Codex coding agent)
+> **Version:** Codex GPT-5 session build (2026-03-10)
+> It works for me, but I take no guarantee if it works for you.
+
 This project provides:
 
 - a macOS Spotlight importer (`.mdimporter`) for Parquet metadata indexing
-- a modern Quick Look preview extension (`.appex`, embedded in a host app) for Parquet metadata preview
+- a modern Quick Look preview extension (`.appex`, embedded in a host app) for Parquet metadata preview with:
+  - hierarchical schema tree (collapsible groups)
+  - full parsed column list (no preview truncation)
+  - Arrow-style logical scalar type labels where available
 
 The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), does not parse row contents, and writes Spotlight metadata for search.
 
@@ -53,6 +62,20 @@ This installs and registers:
 
 - `~/Library/Spotlight/Parquet.mdimporter`
 - `~/Applications/ParquetPreviewHost.app` (embedded modern preview extension)
+
+## Uninstall
+
+Remove importer and preview for current user:
+
+```bash
+./scripts/uninstall.sh
+```
+
+Dry-run mode:
+
+```bash
+./scripts/uninstall.sh --dry-run
+```
 
 ## Test
 
