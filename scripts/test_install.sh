@@ -2,8 +2,12 @@
 set -euo pipefail
 
 BUNDLE_PATH="$HOME/Library/Spotlight/Parquet.mdimporter"
-APP_PATH="$HOME/Applications/ParquetPreviewHost.app"
-APPEX_PATH="$APP_PATH/Contents/PlugIns/ParquetPreview.appex"
+APP_PATH="$HOME/Applications/Parquet Quick Look and Index.app"
+APPEX_PATH="$APP_PATH/Contents/PlugIns/ParquetQuickLook.appex"
+LEGACY_QUICKVIEW_APP_PATH="$HOME/Applications/Parquet QuickView and Index.app"
+LEGACY_QUICKVIEW_APPEX_PATH="$LEGACY_QUICKVIEW_APP_PATH/Contents/PlugIns/ParquetQuickView.appex"
+LEGACY_APP_PATH="$HOME/Applications/ParquetPreviewHost.app"
+LEGACY_APPEX_PATH="$LEGACY_APP_PATH/Contents/PlugIns/ParquetPreview.appex"
 
 if [[ ! -d "$BUNDLE_PATH" ]]; then
   echo "FAIL: Importer bundle not found at $BUNDLE_PATH"
@@ -15,13 +19,22 @@ if ! mdimport -L | rg -Fq "$BUNDLE_PATH"; then
   exit 1
 fi
 
+if [[ ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
+  APP_PATH="$LEGACY_APP_PATH"
+  APPEX_PATH="$LEGACY_APPEX_PATH"
+fi
+if [[ ! -d "$APP_PATH" && -d "$LEGACY_QUICKVIEW_APP_PATH" ]]; then
+  APP_PATH="$LEGACY_QUICKVIEW_APP_PATH"
+  APPEX_PATH="$LEGACY_QUICKVIEW_APPEX_PATH"
+fi
+
 if [[ ! -d "$APP_PATH" ]]; then
-  echo "FAIL: Preview host app not found at $APP_PATH"
+  echo "FAIL: Quick Look app not found at $APP_PATH"
   exit 1
 fi
 
 if [[ ! -d "$APPEX_PATH" ]]; then
-  echo "FAIL: Embedded preview extension missing at $APPEX_PATH"
+  echo "FAIL: Embedded Quick Look extension missing at $APPEX_PATH"
   exit 1
 fi
 
@@ -71,10 +84,10 @@ fi
 
 echo "PASS: Parquet Spotlight importer is installed and active"
 echo "Bundle: $BUNDLE_PATH"
-echo "Preview host app: $APP_PATH"
-echo "Embedded preview extension: $APPEX_PATH"
+echo "Quick Look app: $APP_PATH"
+echo "Embedded Quick Look extension: $APPEX_PATH"
 if [[ "$PREVIEW_REGISTERED" == "no" ]]; then
-  echo "WARN: Preview extension is installed but not listed by pluginkit yet."
+  echo "WARN: Quick Look extension is installed but not listed by pluginkit yet."
   echo "      Open Finder once or run: pluginkit -a \"$APPEX_PATH\""
 fi
 echo "Test file: $TARGET_FILE"
