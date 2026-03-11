@@ -3,7 +3,7 @@
 > [!WARNING]
 > **This repository was written completely using Codex.**
 > **Model:** GPT-5 (Codex coding agent)
-> **Version:** Codex GPT-5 session build (2026-03-10)
+> **Version:** Codex GPT-5 session build (2026-03-11)
 > It works for me, but I take no guarantee if it works for you.
 
 This project provides:
@@ -13,13 +13,17 @@ This project provides:
   - hierarchical schema tree (collapsible groups)
   - full parsed column list (no preview truncation)
   - Arrow-style logical scalar type labels where available
-- a small GUI manager app (`ParquetPreviewHost.app`) with:
+- a small GUI manager app (`Parquet Quick Look and Index.app`) with:
   - `Install`, `Repair`, and `Uninstall` actions
-  - preview rendering settings (expand depth, row limits, type display, font size)
+  - Quick Look rendering settings (expand depth, row limits, type display)
+
+Starting with `0.3.0`, naming is standardized to Apple's official **Quick Look** terminology.
 
 The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), does not parse row contents, and writes Spotlight metadata for search.
 
 ## Prerequisites
+
+- **Minimum supported macOS version: 12.0 (Monterey).**
 
 - macOS with Spotlight enabled
 - Xcode Command Line Tools (`xcrun`, `clang`, `codesign`)
@@ -45,7 +49,7 @@ From the project root:
 This creates:
 
 - `build/Parquet.mdimporter`
-- `build/ParquetPreviewHost.app` (contains `ParquetPreview.appex`)
+- `build/Parquet Quick Look and Index.app` (contains `ParquetQuickLook.appex`)
 
 The build script also:
 
@@ -58,15 +62,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.2.2
+./scripts/release.sh v0.3.0
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.2.2.dmg`
-- creates `release/Parquet-Spotlight-0.2.2.zip`
-- creates `release/Parquet-Spotlight-0.2.2.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.3.0.dmg`
+- creates `release/Parquet-Spotlight-0.3.0.zip`
+- creates `release/Parquet-Spotlight-0.3.0.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
@@ -106,13 +110,13 @@ Install for current user:
 This installs and registers:
 
 - `~/Library/Spotlight/Parquet.mdimporter`
-- `~/Applications/ParquetPreviewHost.app` (embedded modern preview extension)
+- `~/Applications/Parquet Quick Look and Index.app` (embedded modern Quick Look extension)
 
-Use `ParquetPreviewHost.app` from `~/Applications` to:
+Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 
 - install importer payload from inside the app bundle
 - repair registration and refresh caches
-- uninstall importer + preview app
+- uninstall importer + Quick Look app
 - change preview settings used by Quick Look
 
 ## Uninstall
@@ -328,7 +332,7 @@ Keyword tokens written by importer:
 - Bundle ID: `com.rkrug.parquetindexer.importer`
 - Plugin factory UUID: `0E198062-E6D8-4AC2-BBCE-FB860A43A116`
 - Preview extension bundle ID: `com.rkrug.parquetindexer.previewhost.preview`
-- Preview host app bundle ID: `com.rkrug.parquetindexer.previewhost`
+- Quick Look host app bundle ID: `com.rkrug.parquetindexer.previewhost`
 
 ## License
 

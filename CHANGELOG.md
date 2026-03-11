@@ -2,11 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-03-11
+
+- Standardized product naming to Apple's official term **Quick Look** (replacing prior "QuickView/Quick View" wording).
+- Renamed the manager app to `Parquet Quick Look and Index.app` and aligned bundle/executable naming.
+- Renamed the embedded extension artifact to `ParquetQuickLook.appex`.
+- Improved app menu integration for a more native macOS experience:
+  - `About ...`, `Settings...`, and `Quit ...` in the app menu
+  - `Help -> News`
+  - `Help -> Report Issue or Send Feedback...`
+- Added in-app `News` action that opens bundled `NEWS.md`.
+- Updated settings UX:
+  - `Save Settings` -> `Apply Settings`
+  - removed font-size setting
+  - disabled/greyed max-columns control when "Show all columns" is enabled
+- Hardened install/repair registration behavior:
+  - prefers installed app locations over build paths
+  - unregisters stale build and legacy extension paths before re-registering
+  - cleans up legacy app names (`ParquetPreviewHost.app`, `Parquet QuickView and Index.app`) and legacy appex names.
+- Bumped importer, app, and extension versions to `0.3.0`.
+
 ## 0.2.2 - 2026-03-10
 
-- Fixed manager status detection so app installation is recognized in both `/Applications` and `~/Applications`.
-- Fixed false-red Quick Look preview extension status when the extension is present and working outside the previously hardcoded path.
-- Updated uninstall/status path handling to check all relevant app locations (running bundle, user Applications, system Applications).
+- Fixed manager status detection for app installs in both `/Applications` and `~/Applications`.
+- Fixed false-red Quick Look extension status when extension was installed and working but outside the previously hardcoded path.
 
 ## 0.2.1 - 2026-03-10
 

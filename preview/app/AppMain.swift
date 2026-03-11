@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 import SwiftUI
 
+private enum SidebarPane: String, Hashable {
+    case status
+    case actions
+    case settings
+}
+
+private enum AppEvents {
+    static let selectSidebarPane = Notification.Name("SelectSidebarPane")
+}
+
 private enum SettingsKeys {
     // Use the preview extension bundle identifier as settings domain so the
     // sandboxed extension can read values reliably.
@@ -11,13 +21,12 @@ private enum SettingsKeys {
     static let maxColumns = "maxColumns"
     static let showPhysicalType = "showPhysicalType"
     static let hideListElement = "hideListElement"
-    static let fontSize = "fontSize"
 }
 
 private struct StatusInfo {
     let importerInstalled: Bool
     let appInstalledInApplications: Bool
-    let previewBundlePresent: Bool
+    let quickLookBundlePresent: Bool
 }
 
 private struct PreviewSettingsData: Codable {
@@ -26,27 +35,32 @@ private struct PreviewSettingsData: Codable {
     let maxColumns: Int
     let showPhysicalType: Bool
     let hideListElement: Bool
-    let fontSize: Double
 }
 
 private final class AppModel: ObservableObject {
     @Published var statusText = "Ready."
     @Published var importerInstalled = false
     @Published var appInstalledInApplications = false
-    @Published var previewBundlePresent = false
+    @Published var quickLookBundlePresent = false
 
     @Published var expandDepth = 1
     @Published var showAllColumns = true
     @Published var maxColumns = 500
     @Published var showPhysicalType = false
     @Published var hideListElement = true
-    @Published var fontSize = 12.0
 
     private let fm = FileManager.default
     private let spotlightDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Spotlight/Parquet.mdimporter")
     private let legacyQuickLookDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/QuickLook/Parquet.qlgenerator")
-    private let userAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/ParquetPreviewHost.app")
-    private let systemAppDst = URL(fileURLWithPath: "/Applications/ParquetPreviewHost.app")
+    private let userAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/Parquet Quick Look and Index.app")
+    private let systemAppDst = URL(fileURLWithPath: "/Applications/Parquet Quick Look and Index.app")
+    private let legacyQuickViewUserAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/Parquet QuickView and Index.app")
+    private let legacyQuickViewSystemAppDst = URL(fileURLWithPath: "/Applications/Parquet QuickView and Index.app")
+    private let legacyUserAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/ParquetPreviewHost.app")
+    private let legacySystemAppDst = URL(fileURLWithPath: "/Applications/ParquetPreviewHost.app")
+    private let quickLookAppexName = "ParquetQuickLook.appex"
+    private let legacyQuickViewAppexName = "ParquetQuickView.appex"
+    private let legacyPreviewAppexName = "ParquetPreview.appex"
     private let previewContainerSettings = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Containers/com.rkrug.parquetindexer.previewhost.preview/Data/Library/Application Support/ParquetPreview/settings.json")
 
@@ -63,7 +77,6 @@ private final class AppModel: ObservableObject {
             maxColumns = max(1, decoded.maxColumns)
             showPhysicalType = decoded.showPhysicalType
             hideListElement = decoded.hideListElement
-            fontSize = max(9.0, min(decoded.fontSize, 24.0))
             return
         }
 
@@ -74,7 +87,6 @@ private final class AppModel: ObservableObject {
             defaults.set(500, forKey: SettingsKeys.maxColumns)
             defaults.set(false, forKey: SettingsKeys.showPhysicalType)
             defaults.set(true, forKey: SettingsKeys.hideListElement)
-            defaults.set(12.0, forKey: SettingsKeys.fontSize)
         }
         expandDepth = defaults.integer(forKey: SettingsKeys.expandDepth)
         showAllColumns = defaults.bool(forKey: SettingsKeys.showAllColumns)
@@ -82,30 +94,25 @@ private final class AppModel: ObservableObject {
         maxColumns = maxCols > 0 ? maxCols : 500
         showPhysicalType = defaults.bool(forKey: SettingsKeys.showPhysicalType)
         hideListElement = defaults.bool(forKey: SettingsKeys.hideListElement)
-        let fs = defaults.double(forKey: SettingsKeys.fontSize)
-        fontSize = fs > 0 ? fs : 12.0
     }
 
     func saveSettings() {
         let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
         let normalizedExpandDepth = max(0, min(expandDepth, 10))
         let normalizedMaxColumns = max(1, maxColumns)
-        let normalizedFontSize = max(9.0, min(fontSize, 24.0))
 
         defaults.set(normalizedExpandDepth, forKey: SettingsKeys.expandDepth)
         defaults.set(showAllColumns, forKey: SettingsKeys.showAllColumns)
         defaults.set(normalizedMaxColumns, forKey: SettingsKeys.maxColumns)
         defaults.set(showPhysicalType, forKey: SettingsKeys.showPhysicalType)
         defaults.set(hideListElement, forKey: SettingsKeys.hideListElement)
-        defaults.set(normalizedFontSize, forKey: SettingsKeys.fontSize)
 
         let payload = PreviewSettingsData(
             expandDepth: normalizedExpandDepth,
             showAllColumns: showAllColumns,
             maxColumns: normalizedMaxColumns,
             showPhysicalType: showPhysicalType,
-            hideListElement: hideListElement,
-            fontSize: normalizedFontSize
+            hideListElement: hideListElement
         )
         if let data = try? JSONEncoder().encode(payload) {
             let dir = previewContainerSettings.deletingLastPathComponent()
@@ -124,25 +131,23 @@ private final class AppModel: ObservableObject {
         maxColumns = 500
         showPhysicalType = false
         hideListElement = true
-        fontSize = 12.0
         saveSettings()
     }
 
     func refreshStatus() {
-        let runningApp = Bundle.main.bundleURL
-        let candidateApps = [runningApp, userAppDst, systemAppDst]
-        let appInApplications = candidateApps.contains { isAppInApplications($0) }
-        let previewFound = candidateApps.contains {
-            fm.fileExists(atPath: $0.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex").path)
+        let appCandidates = candidateAppBundles()
+        let appInApplications = appCandidates.contains { isAppInApplications($0) }
+        let quickLookPresent = appCandidates.contains {
+            hasEmbeddedQuickLookExtension(in: $0)
         }
         let info = StatusInfo(
             importerInstalled: fm.fileExists(atPath: spotlightDst.path),
             appInstalledInApplications: appInApplications,
-            previewBundlePresent: previewFound
+            quickLookBundlePresent: quickLookPresent
         )
         importerInstalled = info.importerInstalled
         appInstalledInApplications = info.appInstalledInApplications
-        previewBundlePresent = info.previewBundlePresent
+        quickLookBundlePresent = info.quickLookBundlePresent
     }
 
     func install() {
@@ -179,10 +184,12 @@ private final class AppModel: ObservableObject {
 
     func uninstall() {
         do {
-            for app in [Bundle.main.bundleURL, userAppDst, systemAppDst] {
-                let appex = app.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex")
-                if fm.fileExists(atPath: appex.path) {
-                    run("/usr/bin/pluginkit", ["-r", appex.path])
+            for app in candidateAppBundles() {
+                for appexName in [quickLookAppexName, legacyQuickViewAppexName, legacyPreviewAppexName] {
+                    let appex = app.appendingPathComponent("Contents/PlugIns/\(appexName)")
+                    if fm.fileExists(atPath: appex.path) {
+                        run("/usr/bin/pluginkit", ["-r", appex.path])
+                    }
                 }
             }
             if fm.fileExists(atPath: spotlightDst.path) {
@@ -212,12 +219,68 @@ private final class AppModel: ObservableObject {
         if fm.fileExists(atPath: spotlightDst.path) {
             run("/usr/bin/mdimport", ["-r", spotlightDst.path])
         }
-        let appex = Bundle.main.bundleURL.appendingPathComponent("Contents/PlugIns/ParquetPreview.appex")
-        if fm.fileExists(atPath: appex.path) {
-            run("/usr/bin/pluginkit", ["-a", appex.path])
+        for appBundle in registrationAppBundles() {
+            for appexName in [quickLookAppexName, legacyQuickViewAppexName, legacyPreviewAppexName] {
+                let appex = appBundle.appendingPathComponent("Contents/PlugIns/\(appexName)")
+                if fm.fileExists(atPath: appex.path) {
+                    run("/usr/bin/pluginkit", ["-a", appex.path])
+                }
+            }
         }
         run("/usr/bin/qlmanage", ["-r"])
         run("/usr/bin/qlmanage", ["-r", "cache"])
+    }
+
+    private func registrationAppBundles() -> [URL] {
+        // Prefer stable installed app locations first, then fall back to the currently running bundle.
+        let candidates = [
+            userAppDst,
+            systemAppDst,
+            legacyQuickViewUserAppDst,
+            legacyQuickViewSystemAppDst,
+            legacyUserAppDst,
+            legacySystemAppDst,
+            Bundle.main.bundleURL,
+        ]
+        var seen = Set<String>()
+        return candidates.filter {
+            let path = $0.path
+            guard !seen.contains(path) else { return false }
+            seen.insert(path)
+            return fm.fileExists(atPath: path)
+        }
+    }
+
+    private func candidateAppBundles() -> [URL] {
+        let candidates = [
+            Bundle.main.bundleURL,
+            userAppDst,
+            systemAppDst,
+            legacyQuickViewUserAppDst,
+            legacyQuickViewSystemAppDst,
+            legacyUserAppDst,
+            legacySystemAppDst,
+        ]
+        var seen = Set<String>()
+        return candidates.filter {
+            let path = $0.path
+            if seen.contains(path) { return false }
+            seen.insert(path)
+            return true
+        }
+    }
+
+    private func hasEmbeddedQuickLookExtension(in appBundle: URL) -> Bool {
+        let quickLook = appBundle.appendingPathComponent("Contents/PlugIns/\(quickLookAppexName)")
+        if fm.fileExists(atPath: quickLook.path) {
+            return true
+        }
+        let quickView = appBundle.appendingPathComponent("Contents/PlugIns/\(legacyQuickViewAppexName)")
+        if fm.fileExists(atPath: quickView.path) {
+            return true
+        }
+        let legacy = appBundle.appendingPathComponent("Contents/PlugIns/\(legacyPreviewAppexName)")
+        return fm.fileExists(atPath: legacy.path)
     }
 
     private func isAppInApplications(_ url: URL) -> Bool {
@@ -225,10 +288,8 @@ private final class AppModel: ObservableObject {
         if !fm.fileExists(atPath: resolved.path) {
             return false
         }
-
         let userApplications = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications").path + "/"
-        let systemApplications = "/Applications/"
-        return resolved.path.hasPrefix(userApplications) || resolved.path.hasPrefix(systemApplications)
+        return resolved.path.hasPrefix("/Applications/") || resolved.path.hasPrefix(userApplications)
     }
 
     @discardableResult
@@ -246,12 +307,6 @@ private final class AppModel: ObservableObject {
     }
 }
 
-private enum SidebarPane: Hashable {
-    case status
-    case actions
-    case settings
-}
-
 private struct ContentView: View {
     @ObservedObject var model: AppModel
     @State private var selection: SidebarPane? = .status
@@ -263,7 +318,7 @@ private struct ContentView: View {
                     .tag(SidebarPane.status)
                 Label("Actions", systemImage: "wrench.and.screwdriver")
                     .tag(SidebarPane.actions)
-                Label("Preview Settings", systemImage: "slider.horizontal.3")
+                Label("Quick Look Settings", systemImage: "slider.horizontal.3")
                     .tag(SidebarPane.settings)
             }
             .listStyle(.sidebar)
@@ -288,6 +343,13 @@ private struct ContentView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 560)
+        .onReceive(NotificationCenter.default.publisher(for: AppEvents.selectSidebarPane)) { note in
+            guard
+                let raw = note.userInfo?["pane"] as? String,
+                let pane = SidebarPane(rawValue: raw)
+            else { return }
+            selection = pane
+        }
     }
 
     private var statusPane: some View {
@@ -295,7 +357,7 @@ private struct ContentView: View {
             Section("Component Status") {
                 statusRow("Spotlight importer", model.importerInstalled)
                 statusRow("Manager app in /Applications or ~/Applications", model.appInstalledInApplications)
-                statusRow("Quick Look preview extension", model.previewBundlePresent)
+                statusRow("Quick Look extension", model.quickLookBundlePresent)
             }
 
             Section("Current Message") {
@@ -324,7 +386,7 @@ private struct ContentView: View {
 
             Text("Danger Zone")
                 .font(.headline)
-            Text("Uninstall removes the importer and preview app from user locations.")
+            Text("Uninstall removes the importer and Quick Look app from user locations.")
                 .foregroundStyle(.secondary)
             Button("Uninstall") { model.uninstall() }
                 .buttonStyle(.bordered)
@@ -356,42 +418,35 @@ private struct ContentView: View {
 
                 HStack {
                     Text("Max columns (if not all)")
+                        .foregroundStyle(model.showAllColumns ? .secondary : .primary)
                     Spacer()
                     Stepper(value: $model.maxColumns, in: 1...20000, step: 50) { EmptyView() }
                         .labelsHidden()
                     Text("\(model.maxColumns)")
                         .monospacedDigit()
                         .frame(width: 60, alignment: .trailing)
+                        .foregroundStyle(model.showAllColumns ? .secondary : .primary)
                 }
+                .disabled(model.showAllColumns)
 
                 Toggle("Show physical type next to logical type", isOn: $model.showPhysicalType)
                 Toggle("Hide path tokens (list/element)", isOn: $model.hideListElement)
             }
 
-            Section("Typography") {
-                HStack {
-                    Text("Preview font size")
-                    Slider(value: $model.fontSize, in: 9...24, step: 1)
-                    Text("\(Int(model.fontSize))")
-                        .monospacedDigit()
-                        .frame(width: 32, alignment: .trailing)
-                }
-            }
-
             Section {
                 HStack {
-                    Button("Save Settings") { model.saveSettings() }
+                    Button("Apply Settings") { model.saveSettings() }
                         .buttonStyle(.borderedProminent)
                     Button("Reset Defaults") { model.resetSettings() }
                         .buttonStyle(.bordered)
                 }
-                Text("Saved settings apply to new Quick Look previews.")
+                Text("Saved settings apply to new Quick Look windows.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Preview Settings")
+        .navigationTitle("Quick Look Settings")
     }
 
     private func statusRow(_ label: String, _ ok: Bool) -> some View {
@@ -406,6 +461,8 @@ private struct ContentView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let model = AppModel()
+    private let appName = "Parquet Quick Look and Index"
+    private let issuesURL = URL(string: "https://github.com/rkrug/parquet-spotlight-quicklook/issues/new/choose")!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let root = ContentView(model: model)
@@ -418,7 +475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.center()
-        window.title = "Parquet Manager"
+        window.title = "\(appName) Manager"
         window.contentView = hosting
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -431,26 +488,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    @objc private func openSettings(_ sender: Any?) {
+        NotificationCenter.default.post(
+            name: AppEvents.selectSidebarPane,
+            object: nil,
+            userInfo: ["pane": SidebarPane.settings.rawValue]
+        )
+        showMainWindow()
+    }
+
+    @objc private func openNews(_ sender: Any?) {
+        if let bundledNews = Bundle.main.url(forResource: "NEWS", withExtension: "md") {
+            NSWorkspace.shared.open(bundledNews)
+        } else {
+            model.statusText = "Could not open NEWS.md (missing from app bundle)."
+            showMainWindow()
+        }
+    }
+
+    @objc private func openIssueTracker(_ sender: Any?) {
+        NSWorkspace.shared.open(issuesURL)
+    }
+
+    private func showMainWindow() {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func setupMenu() {
         let mainMenu = NSMenu()
         let appItem = NSMenuItem()
+        appItem.title = appName
         mainMenu.addItem(appItem)
 
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: appName)
+        let aboutItem = NSMenuItem(
+            title: "About \(appName)",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(aboutItem)
+        appMenu.addItem(NSMenuItem.separator())
+
+        let settingsItem = NSMenuItem(
+            title: "Settings...",
+            action: #selector(openSettings(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+        appMenu.addItem(NSMenuItem.separator())
+
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu(title: "Services")
+        servicesItem.submenu = servicesMenu
+        NSApp.servicesMenu = servicesMenu
+        appMenu.addItem(servicesItem)
+        appMenu.addItem(NSMenuItem.separator())
+
         appMenu.addItem(
             NSMenuItem(
-                title: "Quit Parquet Manager",
+                title: "Hide \(appName)",
+                action: #selector(NSApplication.hide(_:)),
+                keyEquivalent: "h"
+            )
+        )
+        let hideOthers = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Show All",
+                action: #selector(NSApplication.unhideAllApplications(_:)),
+                keyEquivalent: ""
+            )
+        )
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(
+            NSMenuItem(
+                title: "Quit \(appName)",
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"
             )
         )
         appItem.submenu = appMenu
+
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            NSMenuItem(
+                title: "Minimize",
+                action: #selector(NSWindow.performMiniaturize(_:)),
+                keyEquivalent: "m"
+            )
+        )
+        windowMenu.addItem(
+            NSMenuItem(
+                title: "Zoom",
+                action: #selector(NSWindow.performZoom(_:)),
+                keyEquivalent: ""
+            )
+        )
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(
+            NSMenuItem(
+                title: "Bring All to Front",
+                action: #selector(NSApplication.arrangeInFront(_:)),
+                keyEquivalent: ""
+            )
+        )
+        windowItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
+
+        let helpItem = NSMenuItem()
+        mainMenu.addItem(helpItem)
+        let helpMenu = NSMenu(title: "Help")
+        let newsItem = NSMenuItem(title: "News", action: #selector(openNews(_:)), keyEquivalent: "")
+        newsItem.target = self
+        helpMenu.addItem(newsItem)
+        let issuesItem = NSMenuItem(title: "Report Issue or Send Feedback...", action: #selector(openIssueTracker(_:)), keyEquivalent: "")
+        issuesItem.target = self
+        helpMenu.addItem(issuesItem)
+        helpItem.submenu = helpMenu
+        NSApp.helpMenu = helpMenu
+
         NSApp.mainMenu = mainMenu
     }
 }
 
 @main
-final class ParquetPreviewHostMain: NSObject {
+final class ParquetQuickLookAndIndexMain: NSObject {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()

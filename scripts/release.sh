@@ -6,13 +6,13 @@ usage() {
 Usage: ./scripts/release.sh <tag> [--notes <file>] [--skip-gh]
 
 Examples:
-  ./scripts/release.sh v0.2.2
-  ./scripts/release.sh v0.2.2 --notes /tmp/release-notes.md
-  ./scripts/release.sh v0.2.2 --skip-gh
+  ./scripts/release.sh v0.3.0
+  ./scripts/release.sh v0.3.0 --notes /tmp/release-notes.md
+  ./scripts/release.sh v0.3.0 --skip-gh
 
 Behavior:
   1) Generates app icon and builds artifacts
-  2) Packages ParquetPreviewHost.app into a DMG
+  2) Packages Parquet Quick Look and Index.app into a DMG
   3) Creates/updates GitHub release and uploads DMG + SHA256 (unless --skip-gh)
 
 Preflight checks:
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: tag must look like v0.2.2 (or 0.2.2)" >&2
+  echo "error: tag must look like v0.3.0 (or 0.3.0)" >&2
   exit 2
 fi
 
@@ -141,7 +141,7 @@ echo "==> Preparing release staging"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 
-cp -R "$ROOT_DIR/build/ParquetPreviewHost.app" "$STAGING_DIR/"
+cp -R "$ROOT_DIR/build/Parquet Quick Look and Index.app" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 
 echo "==> Creating ZIP"

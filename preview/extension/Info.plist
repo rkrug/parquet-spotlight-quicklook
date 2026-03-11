@@ -5,19 +5,19 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Parquet Preview Extension</string>
+  <string>Parquet Quick Look Extension</string>
   <key>CFBundleExecutable</key>
-  <string>ParquetPreviewExtension</string>
+  <string>ParquetQuickLookExtension</string>
   <key>CFBundleIdentifier</key>
   <string>com.rkrug.parquetindexer.previewhost.preview</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>ParquetPreviewExtension</string>
+  <string>ParquetQuickLookExtension</string>
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.2</string>
+  <string>0.3.0</string>
   <key>CFBundleVersion</key>
   <string>5</string>
   <key>LSMinimumSystemVersion</key>

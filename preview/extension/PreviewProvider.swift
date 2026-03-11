@@ -25,7 +25,6 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var maxColumns = 500
         var showPhysicalType = false
         var hideListElement = true
-        var fontSize = 12.0
     }
 
     private struct PreviewSettingsData: Codable {
@@ -34,7 +33,6 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let maxColumns: Int
         let showPhysicalType: Bool
         let hideListElement: Bool
-        let fontSize: Double
     }
 
     private final class ColumnTreeNode {
@@ -799,8 +797,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 showAllColumns: decoded.showAllColumns,
                 maxColumns: max(1, decoded.maxColumns),
                 showPhysicalType: decoded.showPhysicalType,
-                hideListElement: decoded.hideListElement,
-                fontSize: max(9.0, min(decoded.fontSize, 24.0))
+                hideListElement: decoded.hideListElement
             )
         }
 
@@ -813,8 +810,6 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             s.maxColumns = maxCols > 0 ? maxCols : 500
             s.showPhysicalType = defaults.bool(forKey: "showPhysicalType")
             s.hideListElement = defaults.bool(forKey: "hideListElement")
-            let fs = defaults.double(forKey: "fontSize")
-            s.fontSize = fs > 0 ? fs : 12.0
         }
         return s
     }
@@ -947,7 +942,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         <head>
           <meta charset=\"utf-8\" />
           <style>
-            body{font-family:-apple-system,system-ui,sans-serif;margin:18px;color:#1f2937;font-size:\(max(9.0, min(settings.fontSize, 24.0)))px}
+            body{font-family:-apple-system,system-ui,sans-serif;margin:18px;color:#1f2937;font-size:12px}
             h1{font-size:20px;margin:0 0 10px}
             .muted{color:#6b7280;font-size:12px}
             .meta{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin:14px 0}
@@ -1011,7 +1006,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           </script>
         </head>
         <body>
-          <h1>Parquet Preview</h1>
+          <h1>Parquet Quick Look</h1>
           <div class=\"muted\">\(esc(path))</div>
 
           <div class=\"meta\">

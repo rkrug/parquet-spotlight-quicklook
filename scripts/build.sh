@@ -10,17 +10,21 @@ MD_MACOS_DIR="$MD_BUNDLE_DIR/Contents/MacOS"
 MD_RESOURCES_DIR="$MD_BUNDLE_DIR/Contents/Resources"
 
 # Modern Quick Look preview extension hosted in app bundle
-APP_BUNDLE_DIR="$BUILD_DIR/ParquetPreviewHost.app"
+APP_BUNDLE_DIR="$BUILD_DIR/Parquet Quick Look and Index.app"
 APP_CONTENTS_DIR="$APP_BUNDLE_DIR/Contents"
 APP_MACOS_DIR="$APP_CONTENTS_DIR/MacOS"
 APP_PLUGINS_DIR="$APP_CONTENTS_DIR/PlugIns"
 APP_RESOURCES_DIR="$APP_CONTENTS_DIR/Resources"
 
-APPEX_DIR="$APP_PLUGINS_DIR/ParquetPreview.appex"
+APPEX_DIR="$APP_PLUGINS_DIR/ParquetQuickLook.appex"
 APPEX_CONTENTS_DIR="$APPEX_DIR/Contents"
 APPEX_MACOS_DIR="$APPEX_CONTENTS_DIR/MacOS"
 
-rm -rf "$MD_BUNDLE_DIR" "$APP_BUNDLE_DIR"
+LEGACY_APP_BUNDLE_DIR="$BUILD_DIR/ParquetPreviewHost.app"
+LEGACY_QUICKVIEW_APP_BUNDLE_DIR="$BUILD_DIR/Parquet QuickView and Index.app"
+LEGACY_QLGEN_DIR="$BUILD_DIR/Parquet.qlgenerator"
+
+rm -rf "$MD_BUNDLE_DIR" "$APP_BUNDLE_DIR" "$LEGACY_APP_BUNDLE_DIR" "$LEGACY_QUICKVIEW_APP_BUNDLE_DIR" "$LEGACY_QLGEN_DIR"
 mkdir -p "$MD_MACOS_DIR" "$MD_RESOURCES_DIR" "$APP_MACOS_DIR" "$APP_RESOURCES_DIR" "$APPEX_MACOS_DIR"
 
 SDK_PATH="$(xcrun --show-sdk-path)"
@@ -46,17 +50,18 @@ cp "$ROOT_DIR/resources/schema.xml" "$MD_RESOURCES_DIR/schema.xml"
 # Build host app with GUI manager (install/repair/uninstall/settings)
 swiftc \
   -parse-as-library \
-  -module-name ParquetPreviewHost \
+  -module-name ParquetQuickLookAndIndex \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
   -O \
   "$ROOT_DIR/preview/app/AppMain.swift" \
   -framework AppKit \
   -framework Foundation \
   -framework SwiftUI \
-  -o "$APP_MACOS_DIR/ParquetPreviewHost"
+  -o "$APP_MACOS_DIR/ParquetQuickLookAndIndex"
 
 cp "$ROOT_DIR/preview/app/Info.plist" "$APP_CONTENTS_DIR/Info.plist"
 cp "$ROOT_DIR/preview/app/AppIcon.icns" "$APP_RESOURCES_DIR/AppIcon.icns"
+cp "$ROOT_DIR/NEWS.md" "$APP_RESOURCES_DIR/NEWS.md"
 cp -R "$MD_BUNDLE_DIR" "$APP_RESOURCES_DIR/Parquet.mdimporter"
 
 # Build extension entry point object (NSExtensionMain)
@@ -71,7 +76,7 @@ clang \
 # Build modern Quick Look preview extension executable
 swiftc \
   -parse-as-library \
-  -module-name ParquetPreviewExtension \
+  -module-name ParquetQuickLookExtension \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
   -O \
   "$ROOT_DIR/preview/extension/PreviewProvider.swift" \
@@ -80,7 +85,7 @@ swiftc \
   -framework Foundation \
   -framework QuickLookUI \
   -framework UniformTypeIdentifiers \
-  -o "$APPEX_MACOS_DIR/ParquetPreviewExtension"
+  -o "$APPEX_MACOS_DIR/ParquetQuickLookExtension"
 
 cp "$ROOT_DIR/preview/extension/Info.plist" "$APPEX_CONTENTS_DIR/Info.plist"
 
@@ -92,10 +97,17 @@ codesign -s - -f \
   --timestamp=none \
   --entitlements "$ROOT_DIR/preview/extension/Entitlements.plist" \
   "$APPEX_DIR"
+# Signing the nested appex may reintroduce Finder metadata on some systems.
+# Clear xattrs again before signing the outer app bundle.
+xattr -cr "$APP_BUNDLE_DIR"
+# Some systems add these xattrs intermittently and codesign rejects bundles
+# containing them.
+find "$APP_BUNDLE_DIR" -exec xattr -d com.apple.FinderInfo {} + >/dev/null 2>&1 || true
+find "$APP_BUNDLE_DIR" -exec xattr -d "com.apple.fileprovider.fpfs#P" {} + >/dev/null 2>&1 || true
 codesign -s - -f \
   --timestamp=none \
   --entitlements "$ROOT_DIR/preview/app/Entitlements.plist" \
   "$APP_BUNDLE_DIR"
 
 echo "Built: $MD_BUNDLE_DIR"
-echo "Built: $APP_BUNDLE_DIR (contains modern preview extension)"
+echo "Built: $APP_BUNDLE_DIR (contains modern Quick Look extension)"
