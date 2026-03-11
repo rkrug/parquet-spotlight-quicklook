@@ -119,6 +119,13 @@ Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 - uninstall importer + Quick Look app
 - change preview settings used by Quick Look
 
+Use `ParquetPreviewHost.app` from `~/Applications` to:
+
+- install importer payload from inside the app bundle
+- repair registration and refresh caches
+- uninstall importer + preview app
+- change preview settings used by Quick Look
+
 ## Uninstall
 
 Remove importer and preview for current user:
