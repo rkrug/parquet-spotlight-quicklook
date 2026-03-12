@@ -1,5 +1,12 @@
 # News
 
+## 0.4.2 - 2026-03-12
+
+### Bug Fixes
+
+- Fixed Release Assets workflow shell compatibility by switching the packaging step to `bash`.
+- Improved test-script portability by adding `grep` fallback when `rg` is unavailable.
+
 ## 0.4.1 - 2026-03-12
 
 ### Enhancements

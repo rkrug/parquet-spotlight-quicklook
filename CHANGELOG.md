@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.2 - 2026-03-12
+
+- Fixed GitHub Release Assets workflow shell compatibility:
+  - use `bash` in the packaging step (`release.yml`) instead of unsupported `/bin/zsh`.
+- Improved script test portability:
+  - `scripts/test_scripts.sh` now falls back to `grep -Fq` when `rg` is unavailable.
+- Bumped importer, app, and extension versions to `0.4.2`.
+
 ## 0.4.1 - 2026-03-12
 
 - Hardened update checks:
