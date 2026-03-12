@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.1 - 2026-03-12
+
+- Hardened update checks:
+  - pinned trusted GitHub API/release URL hosts and paths
+  - strict release tag validation (`vX.Y.Z`) before version comparison
+  - clearer offline/timeout/HTTP/rate-limit error messages.
+- Added in-app diagnostics export (`Copy Diagnostic Report`) for issue reporting:
+  - includes plugin status, key paths, versions, registration snapshots, settings, and recent errors
+  - anonymizes usernames and redacts common secret/token patterns before copying.
+- Added script smoke test suite (`scripts/test_scripts.sh`) and wired it into CI:
+  - CI runs on every push and pull request
+  - build script success + artifact existence
+  - uninstall dry-run behavior
+  - release script guard checks (`--help`, invalid tag, missing notes file)
+  - core logic harness (`scripts/test_core.sh`) for update validation, diagnostics redaction, and dependency-injected status/registration evaluation.
+- Hardened build signing against intermittent metadata/xattr contamination:
+  - bundle sanitization before signing
+  - signed-bundle retry logic in `scripts/build.sh`.
+- Added rollback documentation with a short "revert to previous version" path in `README.md`.
+- Added GitHub bug report template at `.github/ISSUE_TEMPLATE/bug_report.yml` with required diagnostics section and optional diagnostic-file upload note.
+- Bumped importer, app, and extension versions to `0.4.1`.
+
 ## 0.4.0 - 2026-03-12
 
 - Added Quick Look folder support for parquet datasets.

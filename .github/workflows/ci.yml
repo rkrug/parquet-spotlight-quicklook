@@ -11,5 +11,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build importer
+      - name: Build bundles
         run: ./scripts/build.sh
+
+      - name: Script smoke tests
+        run: ./scripts/test_scripts.sh

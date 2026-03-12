@@ -1,0 +1,125 @@
+name: Bug report
+description: Report a problem with Parquet Quick Look and Index
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+
+        Before submitting:
+        - Open **Parquet Quick Look and Index** -> `Status` -> `Copy Diagnostic Report`
+        - Paste that report below (it is designed to anonymize sensitive data)
+        - Optionally also attach the report as a `.txt` file by drag-and-drop
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I included a diagnostic report from the app.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Example `0.4.1`
+      placeholder: "0.4.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_location
+    attributes:
+      label: Install location
+      options:
+        - /Applications
+        - ~/Applications
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component_area
+    attributes:
+      label: Affected area
+      options:
+        - Spotlight importer
+        - Quick Look extension
+        - Manager app UI
+        - Installer / Repair / Uninstall
+        - Update check
+        - Release packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug summary
+      description: One or two sentences.
+      placeholder: What is broken?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide exact steps.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report
+      description: Paste output from `Copy Diagnostic Report` (Status pane).
+      render: text
+      placeholder: Paste full diagnostic report here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics_attachment
+    attributes:
+      label: Diagnostic report attachment (optional)
+      description: |
+        If possible, also attach the diagnostic report as a file:
+        1. Save the copied report as `diagnostic-report.txt`
+        2. Drag and drop the file into this issue form/comment area
+      placeholder: "Attached file: diagnostic-report.txt"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, logs, or anything else relevant.
+      placeholder: Optional

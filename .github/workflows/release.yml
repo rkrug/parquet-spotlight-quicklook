@@ -1,0 +1,74 @@
+name: Release Assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build bundles
+        run: ./scripts/build.sh
+
+      - name: Package DMG/ZIP/SHA256
+        shell: zsh
+        run: |
+          set -euo pipefail
+
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+
+          ROOT_DIR="$PWD"
+          RELEASE_DIR="$ROOT_DIR/release"
+          STAGING_DIR="$RELEASE_DIR/Parquet-Spotlight-$VERSION"
+          DMG_PATH="$RELEASE_DIR/Parquet-Spotlight-$VERSION.dmg"
+          ZIP_PATH="$RELEASE_DIR/Parquet-Spotlight-$VERSION.zip"
+          SHA_PATH="$DMG_PATH.sha256"
+
+          rm -rf "$STAGING_DIR"
+          mkdir -p "$STAGING_DIR"
+
+          cp -R "$ROOT_DIR/build/Parquet Quick Look and Index.app" "$STAGING_DIR/"
+          ln -s /Applications "$STAGING_DIR/Applications"
+
+          rm -f "$ZIP_PATH"
+          (
+            cd "$RELEASE_DIR"
+            zip -r -y "$(basename \"$ZIP_PATH\")" "$(basename \"$STAGING_DIR\")" >/dev/null
+          )
+
+          rm -f "$DMG_PATH"
+          hdiutil create \
+            -volname "Parquet Spotlight $VERSION" \
+            -srcfolder "$STAGING_DIR" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH" >/dev/null
+
+          shasum -a 256 "$DMG_PATH" > "$SHA_PATH"
+
+          {
+            echo "DMG_PATH=$DMG_PATH"
+            echo "ZIP_PATH=$ZIP_PATH"
+            echo "SHA_PATH=$SHA_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            ${{ env.DMG_PATH }}
+            ${{ env.ZIP_PATH }}
+            ${{ env.SHA_PATH }}
+          fail_on_unmatched_files: true
