@@ -236,6 +236,20 @@ Dataset scan behavior is controlled in app settings:
 - `Max files (if not all)`
 - `Recursive scan folders`
 
+7. Run script + core logic test suite:
+
+```bash
+./scripts/test_scripts.sh
+```
+
+This also runs:
+
+```bash
+./scripts/test_core.sh
+```
+
+`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, and diagnostics redaction rules.
+
 ## Search
 
 ### Spotlight GUI

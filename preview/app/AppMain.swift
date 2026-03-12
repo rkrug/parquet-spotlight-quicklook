@@ -70,6 +70,19 @@ private struct PreviewSettingsData: Codable {
     let recursiveScan: Bool
 }
 
+private struct LiveSystemAccess: ParquetSystemAccess {
+    let fileManager: FileManager
+    let runOutput: (String, [String]) -> String?
+
+    func fileExists(atPath path: String) -> Bool {
+        fileManager.fileExists(atPath: path)
+    }
+
+    func commandOutput(_ launchPath: String, _ arguments: [String]) -> String? {
+        runOutput(launchPath, arguments)
+    }
+}
+
 private final class AppModel: ObservableObject {
     @Published var statusText = "Ready."
     @Published var importerInstalled = false
@@ -90,63 +103,9 @@ private final class AppModel: ObservableObject {
     private let appDisplayName = "Parquet Quick Look and Index"
     private let maxRecentErrors = 20
 
-    private struct SemanticVersion: Comparable {
-        let major: Int
-        let minor: Int
-        let patch: Int
-
-        init(major: Int, minor: Int, patch: Int) {
-            self.major = major
-            self.minor = minor
-            self.patch = patch
-        }
-
-        static let zero = SemanticVersion(major: 0, minor: 0, patch: 0)
-
-        init?(looseVersion value: String) {
-            var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if raw.hasPrefix("v") || raw.hasPrefix("V") {
-                raw.removeFirst()
-            }
-            let parts = raw.split(separator: ".", omittingEmptySubsequences: false)
-            guard parts.count == 3 else { return nil }
-            guard
-                let major = Int(parts[0]),
-                let minor = Int(parts[1]),
-                let patch = Int(parts[2])
-            else {
-                return nil
-            }
-            self.major = major
-            self.minor = minor
-            self.patch = patch
-        }
-
-        init?(strictTag value: String) {
-            let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard raw.hasPrefix("v") else { return nil }
-            guard !raw.contains("-"), !raw.contains("+") else { return nil }
-            self.init(looseVersion: String(raw.dropFirst()))
-        }
-
-        var normalized: String {
-            "\(major).\(minor).\(patch)"
-        }
-
-        static func < (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
-            if lhs.major != rhs.major { return lhs.major < rhs.major }
-            if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
-            return lhs.patch < rhs.patch
-        }
-    }
-
     private struct GitHubLatestRelease: Decodable {
         let tag_name: String
         let html_url: String
-    }
-
-    private struct GitHubErrorResponse: Decodable {
-        let message: String
     }
 
     private let fm = FileManager.default
@@ -170,10 +129,7 @@ private final class AppModel: ObservableObject {
         .appendingPathComponent("Library/Application Support/ParquetPreview")
     private let previewCacheDir = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Caches/com.rkrug.parquetindexer.previewhost.preview")
-    private let expectedRepoPath = "/rkrug/parquet-spotlight-quicklook"
-    private let expectedGitHubHost = "github.com"
-    private let expectedGitHubAPIHost = "api.github.com"
-    private let expectedReleasesLatestPath = "/repos/rkrug/parquet-spotlight-quicklook/releases/latest"
+    private let updateValidator = ParquetUpdateValidator()
     private let releaseCheckURL = URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")!
 
     init() {
@@ -324,7 +280,7 @@ private final class AppModel: ObservableObject {
             if let error {
                 DispatchQueue.main.async {
                     if manual {
-                        self.showUpdateErrorDialog(self.describeNetworkError(error))
+                        self.showUpdateErrorDialog(ParquetUpdateErrorMapper.describeNetworkError(error))
                     }
                 }
                 return
@@ -339,7 +295,7 @@ private final class AppModel: ObservableObject {
                 return
             }
 
-            guard self.isTrustedReleaseAPIResponseURL(http.url) else {
+            guard self.updateValidator.isTrustedReleaseAPIResponseURL(http.url) else {
                 DispatchQueue.main.async {
                     if manual {
                         self.showUpdateErrorDialog("Could not check for updates: response origin was not trusted.")
@@ -351,7 +307,7 @@ private final class AppModel: ObservableObject {
             guard (200...299).contains(http.statusCode) else {
                 DispatchQueue.main.async {
                     if manual {
-                        self.showUpdateErrorDialog(self.describeHTTPError(statusCode: http.statusCode, data: data))
+                        self.showUpdateErrorDialog(ParquetUpdateErrorMapper.describeHTTPError(statusCode: http.statusCode, data: data))
                     }
                 }
                 return
@@ -373,7 +329,7 @@ private final class AppModel: ObservableObject {
                 return
             }
 
-            guard let latestVersion = SemanticVersion(strictTag: release.tag_name) else {
+            guard let latestVersion = ParquetSemVer(strictTag: release.tag_name) else {
                 DispatchQueue.main.async {
                     if manual {
                         self.showUpdateErrorDialog("Could not check for updates: latest release tag is not valid semver (expected vX.Y.Z).")
@@ -382,7 +338,7 @@ private final class AppModel: ObservableObject {
                 return
             }
 
-            let currentVersion = SemanticVersion(looseVersion: self.currentVersion()) ?? .zero
+            let currentVersion = ParquetSemVer(looseVersion: self.currentVersion()) ?? .zero
             let skippedVersion = defaults.string(forKey: SettingsKeys.skippedUpdateVersion) ?? ""
 
             if latestVersion > currentVersion {
@@ -395,7 +351,7 @@ private final class AppModel: ObservableObject {
                     }
                     return
                 }
-                guard self.isTrustedReleasePageURL(releaseURL, expectedTag: release.tag_name) else {
+                guard self.updateValidator.isTrustedReleasePageURL(releaseURL, expectedTag: release.tag_name) else {
                     DispatchQueue.main.async {
                         if manual {
                             self.showUpdateErrorDialog("Could not check for updates: latest release page URL is not trusted.")
@@ -460,87 +416,29 @@ private final class AppModel: ObservableObject {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
-    private func isTrustedReleaseAPIResponseURL(_ url: URL?) -> Bool {
-        guard let url else { return false }
-        guard url.scheme?.lowercased() == "https" else { return false }
-        guard url.host?.lowercased() == expectedGitHubAPIHost else { return false }
-        return normalizedPath(url.path) == expectedReleasesLatestPath
-    }
-
-    private func isTrustedReleasePageURL(_ url: URL, expectedTag: String) -> Bool {
-        guard url.scheme?.lowercased() == "https" else { return false }
-        guard url.host?.lowercased() == expectedGitHubHost else { return false }
-        let expectedPath = "\(expectedRepoPath)/releases/tag/\(expectedTag)"
-        return normalizedPath(url.path) == expectedPath
-    }
-
-    private func normalizedPath(_ path: String) -> String {
-        var normalized = path
-        while normalized.count > 1 && normalized.hasSuffix("/") {
-            normalized.removeLast()
-        }
-        return normalized
-    }
-
-    private func describeNetworkError(_ error: Error) -> String {
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .notConnectedToInternet, .networkConnectionLost:
-                return "Could not check for updates: you appear to be offline."
-            case .timedOut:
-                return "Could not check for updates: request timed out."
-            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
-                return "Could not check for updates: cannot reach GitHub."
-            default:
-                return "Could not check for updates: \(urlError.localizedDescription)"
-            }
-        }
-        return "Could not check for updates: \(error.localizedDescription)"
-    }
-
-    private func describeHTTPError(statusCode: Int, data: Data?) -> String {
-        let apiMessage = decodeGitHubErrorMessage(data)
-        switch statusCode {
-        case 403:
-            if let apiMessage, !apiMessage.isEmpty {
-                return "Could not check for updates: GitHub access was denied (\(apiMessage))."
-            }
-            return "Could not check for updates: GitHub API rate limit or access denied (HTTP 403)."
-        case 404:
-            return "Could not check for updates: release endpoint not found (HTTP 404)."
-        case 429:
-            return "Could not check for updates: too many requests (HTTP 429)."
-        default:
-            if let apiMessage, !apiMessage.isEmpty {
-                return "Could not check for updates: HTTP \(statusCode) (\(apiMessage))."
-            }
-            return "Could not check for updates: HTTP \(statusCode)."
-        }
-    }
-
-    private func decodeGitHubErrorMessage(_ data: Data?) -> String? {
-        guard let data else { return nil }
-        guard let decoded = try? JSONDecoder().decode(GitHubErrorResponse.self, from: data) else {
-            return nil
-        }
-        return decoded.message.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     func refreshStatus() {
-        let appCandidates = candidateAppBundles()
-        let appInApplications = appCandidates.contains { isAppInApplications($0) }
-        let quickLookPresent = appCandidates.contains {
-            hasEmbeddedQuickLookExtension(in: $0)
-        }
-        let importerPresentOnDisk = fm.fileExists(atPath: spotlightDst.path) || fm.fileExists(atPath: systemSpotlightDst.path)
-        let info = StatusInfo(
-            importerInstalled: importerPresentOnDisk || isImporterRegistered(),
-            appInstalledInApplications: appInApplications,
-            quickLookBundlePresent: quickLookPresent
+        let appCandidatePaths = candidateAppBundles().map(\.path)
+        let evaluator = ParquetStatusEvaluator(
+            userImporterPath: spotlightDst.path,
+            systemImporterPath: systemSpotlightDst.path,
+            appCandidatePaths: appCandidatePaths,
+            quickLookAppexNames: [quickLookAppexName, legacyQuickViewAppexName, legacyPreviewAppexName]
         )
-        importerInstalled = info.importerInstalled
-        appInstalledInApplications = info.appInstalledInApplications
-        quickLookBundlePresent = info.quickLookBundlePresent
+        let system = LiveSystemAccess(
+            fileManager: fm,
+            runOutput: { [weak self] launchPath, args in
+                self?.runOutput(launchPath, args)
+            }
+        )
+        let info = evaluator.evaluate(using: system)
+        let statusInfo = StatusInfo(
+            importerInstalled: info.importerInstalled,
+            appInstalledInApplications: info.appInstalledInApplications,
+            quickLookBundlePresent: info.quickLookBundlePresent
+        )
+        importerInstalled = statusInfo.importerInstalled
+        appInstalledInApplications = statusInfo.appInstalledInApplications
+        quickLookBundlePresent = statusInfo.quickLookBundlePresent
     }
 
     func install() {
@@ -863,42 +761,11 @@ private final class AppModel: ObservableObject {
     }
 
     private func anonymizePath(_ path: String) -> String {
-        var output = path
-        let home = NSHomeDirectory()
-        if output.hasPrefix(home) {
-            output = "~" + output.dropFirst(home.count)
-        }
-        output = output.replacingOccurrences(
-            of: "/Users/[^/\\s]+",
-            with: "/Users/<user>",
-            options: .regularExpression
-        )
-        return output
+        ParquetDiagnosticsSanitizer.anonymizePath(path)
     }
 
     private func sanitizeForDiagnostics(_ raw: String) -> String {
-        var text = raw
-        text = text.replacingOccurrences(
-            of: "/Users/[^/\\s]+",
-            with: "/Users/<user>",
-            options: .regularExpression
-        )
-        text = text.replacingOccurrences(
-            of: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
-            with: "<redacted-email>",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        text = text.replacingOccurrences(
-            of: "\\b(ghp|github_pat)_[A-Za-z0-9_]+\\b",
-            with: "<redacted-token>",
-            options: .regularExpression
-        )
-        text = text.replacingOccurrences(
-            of: "(?i)\\b(api[_-]?key|token|password|secret)\\s*[:=]\\s*[^\\s,;]+",
-            with: "$1=<redacted>",
-            options: .regularExpression
-        )
-        return text
+        ParquetDiagnosticsSanitizer.sanitize(raw)
     }
 
     @discardableResult

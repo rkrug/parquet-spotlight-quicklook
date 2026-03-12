@@ -11,6 +11,8 @@
 - Update dialog now supports `Skip this version` and includes app/version context.
 - Hardened update checks with strict trusted URL + semver tag validation and clearer network/API error messages.
 - Added `Copy Diagnostic Report` in-app action with anonymized troubleshooting output (status, versions, paths, plugin registrations, recent errors).
+- Added script smoke tests (`scripts/test_scripts.sh`) and CI execution for build/release guard checks.
+- Added `scripts/test_core.sh` to validate update-check, diagnostics-redaction, and dependency-injected status logic.
 - Uninstall now performs full settings/data cleanup (best effort) and restarts Finder.
 - Added rollback guidance in README for reverting to a previous release quickly.
 

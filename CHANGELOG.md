@@ -27,6 +27,12 @@ All notable changes to this project will be documented in this file.
 - Added in-app diagnostics export (`Copy Diagnostic Report`) for issue reporting:
   - includes plugin status, key paths, versions, registration snapshots, settings, and recent errors
   - anonymizes usernames and redacts common secret/token patterns before copying.
+- Added script smoke test suite (`scripts/test_scripts.sh`) and wired it into CI:
+  - CI runs on every push and pull request
+  - build script success + artifact existence
+  - uninstall dry-run behavior
+  - release script guard checks (`--help`, invalid tag, missing notes file)
+  - core logic harness (`scripts/test_core.sh`) for update validation, diagnostics redaction, and dependency-injected status/registration evaluation.
 - Added fallback behavior for non-parquet folders by returning no preview so the standard macOS folder Quick Look remains available.
 - Merged management actions into the `Status` pane (removed separate `Actions` tab).
 - Added app auto-install of the Spotlight importer on launch when missing.
