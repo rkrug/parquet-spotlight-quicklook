@@ -44,7 +44,7 @@ jobs:
           rm -f "$ZIP_PATH"
           (
             cd "$RELEASE_DIR"
-            zip -r -y "$(basename \"$ZIP_PATH\")" "$(basename \"$STAGING_DIR\")" >/dev/null
+            zip -r -y "$(basename "$ZIP_PATH")" "$(basename "$STAGING_DIR")" >/dev/null
           )
 
           rm -f "$DMG_PATH"
