@@ -3,7 +3,7 @@
 > [!WARNING]
 > **This repository was written completely using Codex.**
 > **Model:** GPT-5 (Codex coding agent)
-> **Version:** Codex GPT-5 session build (2026-03-11)
+> **Version:** Codex GPT-5 session build (2026-03-12)
 > It works for me, but I take no guarantee if it works for you.
 
 This project provides:
@@ -14,10 +14,12 @@ This project provides:
   - full parsed column list (no preview truncation)
   - Arrow-style logical scalar type labels where available
 - a small GUI manager app (`Parquet Quick Look and Index.app`) with:
-  - `Install`, `Repair`, and `Uninstall` actions
-  - Quick Look rendering settings (expand depth, row limits, type display)
+  - `Re-Install`, `Repair Registration`, and `Uninstall` actions
+  - Quick Look rendering settings (schema display + dataset scan controls)
+  - dedicated `Updates` tab for release checks (`Daily`/`Weekly`/`Monthly`)
+  - automatic importer install on app launch if missing
 
-Starting with `0.3.0`, naming is standardized to Apple's official **Quick Look** terminology.
+Since `0.3.0`, naming is standardized to Apple's official **Quick Look** terminology.
 
 The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), does not parse row contents, and writes Spotlight metadata for search.
 
@@ -62,15 +64,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.3.0
+./scripts/release.sh v0.4.0
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.3.0.dmg`
-- creates `release/Parquet-Spotlight-0.3.0.zip`
-- creates `release/Parquet-Spotlight-0.3.0.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.4.0.dmg`
+- creates `release/Parquet-Spotlight-0.4.0.zip`
+- creates `release/Parquet-Spotlight-0.4.0.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
@@ -114,10 +116,12 @@ This installs and registers:
 
 Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 
-- install importer payload from inside the app bundle
+- auto-install importer payload if missing (on launch)
+- re-install importer payload from inside the app bundle
 - repair registration and refresh caches
-- uninstall importer + Quick Look app
+- uninstall importer + Quick Look app (including settings cleanup)
 - change preview settings used by Quick Look
+- check for updates (menu item + Updates tab), with `Skip this version` option
 
 ## Uninstall
 
@@ -126,6 +130,12 @@ Remove importer and preview for current user:
 ```bash
 ./scripts/uninstall.sh
 ```
+
+This performs full user-level cleanup:
+
+- app/importer/plugin removal
+- Quick Look cache refresh + Finder restart
+- settings/preferences/cache cleanup (best effort for container root metadata)
 
 Dry-run mode:
 
@@ -188,6 +198,23 @@ Optional explicit test file:
 ```bash
 qlmanage -p /path/to/file.parquet
 ```
+
+6. Test dataset folder preview:
+
+```bash
+qlmanage -p /path/to/parquet-dataset-folder
+```
+
+Behavior:
+
+- folders containing parquet files render a dataset summary preview
+- non-parquet folders fall back to standard macOS folder Quick Look
+
+Dataset scan behavior is controlled in app settings:
+
+- `Scan all files`
+- `Max files (if not all)`
+- `Recursive scan folders`
 
 ## Search
 

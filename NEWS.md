@@ -1,5 +1,16 @@
 # News
 
+## 0.4.0 - 2026-03-12
+
+- Added Quick Look support for parquet dataset folders.
+- Added Hive-style partition summary (`key=value`) and merged schema display for folder previews.
+- Added dataset scan settings (`Scan all files`, `Max files`, `Recursive scan folders`).
+- Non-parquet folders now fall back to normal macOS folder Quick Look.
+- Manager UI now combines status and actions in one pane.
+- Added dedicated `Updates` tab with interval-based update checks and manual update check action.
+- Update dialog now supports `Skip this version` and includes app/version context.
+- Uninstall now performs full settings/data cleanup (best effort) and restarts Finder.
+
 ## 0.3.0 - 2026-03-11
 
 - Standardized naming to **Quick Look** and renamed the manager app to `Parquet Quick Look and Index`.

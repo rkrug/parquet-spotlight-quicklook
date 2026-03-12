@@ -17,9 +17,9 @@
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.3.0</string>
+  <string>0.4.0</string>
   <key>CFBundleVersion</key>
-  <string>5</string>
+  <string>6</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSExtension</key>
@@ -34,6 +34,7 @@
       <array>
         <string>com.rkrug.parquet</string>
         <string>dyn.ah62d4rv4ge81a2pwsf40n7a</string>
+        <string>public.folder</string>
       </array>
       <key>QLSupportsSearchableItems</key>
       <false/>

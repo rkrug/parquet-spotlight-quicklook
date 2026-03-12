@@ -4,12 +4,13 @@ import SwiftUI
 
 private enum SidebarPane: String, Hashable {
     case status
-    case actions
     case settings
+    case updates
 }
 
 private enum AppEvents {
     static let selectSidebarPane = Notification.Name("SelectSidebarPane")
+    static let manualUpdateCheck = Notification.Name("ManualUpdateCheck")
 }
 
 private enum SettingsKeys {
@@ -21,6 +22,35 @@ private enum SettingsKeys {
     static let maxColumns = "maxColumns"
     static let showPhysicalType = "showPhysicalType"
     static let hideListElement = "hideListElement"
+    static let scanAllFiles = "scanAllFiles"
+    static let maxScanFiles = "maxScanFiles"
+    static let recursiveScan = "recursiveScan"
+    static let autoCheckUpdates = "autoCheckUpdates"
+    static let updateCheckInterval = "updateCheckInterval"
+    static let lastUpdateCheckAt = "lastUpdateCheckAt"
+    static let skippedUpdateVersion = "skippedUpdateVersion"
+}
+
+private enum UpdateCheckInterval: String, CaseIterable {
+    case daily
+    case weekly
+    case monthly
+
+    var seconds: TimeInterval {
+        switch self {
+        case .daily: return 24 * 60 * 60
+        case .weekly: return 7 * 24 * 60 * 60
+        case .monthly: return 30 * 24 * 60 * 60
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .daily: return "Daily"
+        case .weekly: return "Weekly"
+        case .monthly: return "Monthly"
+        }
+    }
 }
 
 private struct StatusInfo {
@@ -35,6 +65,9 @@ private struct PreviewSettingsData: Codable {
     let maxColumns: Int
     let showPhysicalType: Bool
     let hideListElement: Bool
+    let scanAllFiles: Bool
+    let maxScanFiles: Int
+    let recursiveScan: Bool
 }
 
 private final class AppModel: ObservableObject {
@@ -48,9 +81,21 @@ private final class AppModel: ObservableObject {
     @Published var maxColumns = 500
     @Published var showPhysicalType = false
     @Published var hideListElement = true
+    @Published var scanAllFiles = false
+    @Published var maxScanFiles = 500
+    @Published var recursiveScan = true
+    @Published var autoCheckUpdates = true
+    @Published var updateCheckInterval: UpdateCheckInterval = .daily
+    private let appDisplayName = "Parquet Quick Look and Index"
+
+    private struct GitHubLatestRelease: Decodable {
+        let tag_name: String
+        let html_url: String
+    }
 
     private let fm = FileManager.default
     private let spotlightDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Spotlight/Parquet.mdimporter")
+    private let systemSpotlightDst = URL(fileURLWithPath: "/Library/Spotlight/Parquet.mdimporter")
     private let legacyQuickLookDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/QuickLook/Parquet.qlgenerator")
     private let userAppDst = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications/Parquet Quick Look and Index.app")
     private let systemAppDst = URL(fileURLWithPath: "/Applications/Parquet Quick Look and Index.app")
@@ -63,6 +108,13 @@ private final class AppModel: ObservableObject {
     private let legacyPreviewAppexName = "ParquetPreview.appex"
     private let previewContainerSettings = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Containers/com.rkrug.parquetindexer.previewhost.preview/Data/Library/Application Support/ParquetPreview/settings.json")
+    private let previewContainerRoot = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Containers/com.rkrug.parquetindexer.previewhost.preview")
+    private let previewSupportDir = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/ParquetPreview")
+    private let previewCacheDir = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Caches/com.rkrug.parquetindexer.previewhost.preview")
+    private let releaseCheckURL = URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")!
 
     init() {
         loadSettings()
@@ -77,6 +129,9 @@ private final class AppModel: ObservableObject {
             maxColumns = max(1, decoded.maxColumns)
             showPhysicalType = decoded.showPhysicalType
             hideListElement = decoded.hideListElement
+            scanAllFiles = decoded.scanAllFiles
+            maxScanFiles = max(1, decoded.maxScanFiles)
+            recursiveScan = decoded.recursiveScan
             return
         }
 
@@ -87,6 +142,15 @@ private final class AppModel: ObservableObject {
             defaults.set(500, forKey: SettingsKeys.maxColumns)
             defaults.set(false, forKey: SettingsKeys.showPhysicalType)
             defaults.set(true, forKey: SettingsKeys.hideListElement)
+            defaults.set(false, forKey: SettingsKeys.scanAllFiles)
+            defaults.set(500, forKey: SettingsKeys.maxScanFiles)
+            defaults.set(true, forKey: SettingsKeys.recursiveScan)
+        }
+        if defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil {
+            defaults.set(true, forKey: SettingsKeys.autoCheckUpdates)
+        }
+        if defaults.object(forKey: SettingsKeys.updateCheckInterval) == nil {
+            defaults.set(UpdateCheckInterval.daily.rawValue, forKey: SettingsKeys.updateCheckInterval)
         }
         expandDepth = defaults.integer(forKey: SettingsKeys.expandDepth)
         showAllColumns = defaults.bool(forKey: SettingsKeys.showAllColumns)
@@ -94,25 +158,53 @@ private final class AppModel: ObservableObject {
         maxColumns = maxCols > 0 ? maxCols : 500
         showPhysicalType = defaults.bool(forKey: SettingsKeys.showPhysicalType)
         hideListElement = defaults.bool(forKey: SettingsKeys.hideListElement)
+        scanAllFiles = defaults.bool(forKey: SettingsKeys.scanAllFiles)
+        let maxScan = defaults.integer(forKey: SettingsKeys.maxScanFiles)
+        maxScanFiles = maxScan > 0 ? maxScan : 500
+        if defaults.object(forKey: SettingsKeys.recursiveScan) == nil {
+            recursiveScan = true
+        } else {
+            recursiveScan = defaults.bool(forKey: SettingsKeys.recursiveScan)
+        }
+        if defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil {
+            autoCheckUpdates = true
+        } else {
+            autoCheckUpdates = defaults.bool(forKey: SettingsKeys.autoCheckUpdates)
+        }
+        if let raw = defaults.string(forKey: SettingsKeys.updateCheckInterval),
+           let interval = UpdateCheckInterval(rawValue: raw) {
+            updateCheckInterval = interval
+        } else {
+            updateCheckInterval = .daily
+        }
     }
 
     func saveSettings() {
         let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
         let normalizedExpandDepth = max(0, min(expandDepth, 10))
         let normalizedMaxColumns = max(1, maxColumns)
+        let normalizedMaxScanFiles = max(1, maxScanFiles)
 
         defaults.set(normalizedExpandDepth, forKey: SettingsKeys.expandDepth)
         defaults.set(showAllColumns, forKey: SettingsKeys.showAllColumns)
         defaults.set(normalizedMaxColumns, forKey: SettingsKeys.maxColumns)
         defaults.set(showPhysicalType, forKey: SettingsKeys.showPhysicalType)
         defaults.set(hideListElement, forKey: SettingsKeys.hideListElement)
+        defaults.set(scanAllFiles, forKey: SettingsKeys.scanAllFiles)
+        defaults.set(normalizedMaxScanFiles, forKey: SettingsKeys.maxScanFiles)
+        defaults.set(recursiveScan, forKey: SettingsKeys.recursiveScan)
+        defaults.set(autoCheckUpdates, forKey: SettingsKeys.autoCheckUpdates)
+        defaults.set(updateCheckInterval.rawValue, forKey: SettingsKeys.updateCheckInterval)
 
         let payload = PreviewSettingsData(
             expandDepth: normalizedExpandDepth,
             showAllColumns: showAllColumns,
             maxColumns: normalizedMaxColumns,
             showPhysicalType: showPhysicalType,
-            hideListElement: hideListElement
+            hideListElement: hideListElement,
+            scanAllFiles: scanAllFiles,
+            maxScanFiles: normalizedMaxScanFiles,
+            recursiveScan: recursiveScan
         )
         if let data = try? JSONEncoder().encode(payload) {
             let dir = previewContainerSettings.deletingLastPathComponent()
@@ -131,7 +223,148 @@ private final class AppModel: ObservableObject {
         maxColumns = 500
         showPhysicalType = false
         hideListElement = true
+        scanAllFiles = false
+        maxScanFiles = 500
+        recursiveScan = true
+        autoCheckUpdates = true
+        updateCheckInterval = .daily
         saveSettings()
+    }
+
+    func autoCheckForUpdatesIfNeeded() {
+        checkForUpdates(manual: false)
+    }
+
+    func checkForUpdates(manual: Bool) {
+        let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
+        let now = Date().timeIntervalSince1970
+        if !manual {
+            guard autoCheckUpdates else { return }
+            let last = defaults.double(forKey: SettingsKeys.lastUpdateCheckAt)
+            if last > 0, (now - last) < updateCheckInterval.seconds {
+                return
+            }
+        }
+        defaults.set(now, forKey: SettingsKeys.lastUpdateCheckAt)
+
+        var request = URLRequest(url: releaseCheckURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("ParquetQuickLookAndIndex", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            guard let self else { return }
+
+            if let error {
+                DispatchQueue.main.async {
+                    if manual { self.showUpdateErrorDialog("Could not check for updates: \(error.localizedDescription)") }
+                }
+                return
+            }
+
+            guard let data else {
+                DispatchQueue.main.async {
+                    if manual { self.showUpdateErrorDialog("Could not check for updates: no response data.") }
+                }
+                return
+            }
+
+            guard let release = try? JSONDecoder().decode(GitHubLatestRelease.self, from: data) else {
+                DispatchQueue.main.async {
+                    if manual { self.showUpdateErrorDialog("Could not parse release information.") }
+                }
+                return
+            }
+
+            let latestVersion = self.normalizeVersion(release.tag_name)
+            let currentVersion = self.currentVersion()
+            let skippedVersion = defaults.string(forKey: SettingsKeys.skippedUpdateVersion) ?? ""
+
+            if self.isVersion(latestVersion, greaterThan: currentVersion) {
+                if !manual && latestVersion == skippedVersion {
+                    return
+                }
+                guard let releaseURL = URL(string: release.html_url) else {
+                    DispatchQueue.main.async {
+                        if manual { self.showUpdateErrorDialog("Latest release URL is invalid.") }
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.showUpdateAvailableDialog(version: latestVersion, url: releaseURL)
+                }
+            } else if manual {
+                DispatchQueue.main.async {
+                    self.showUpToDateDialog()
+                }
+            }
+        }.resume()
+    }
+
+    private func showUpdateAvailableDialog(version: String, url: URL) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.icon = NSApp.applicationIconImage
+        alert.messageText = "New Version Available"
+        alert.informativeText = "\(appDisplayName) (\(currentVersion())) can be updated to \(version)."
+        alert.addButton(withTitle: "Open Release Page")
+        alert.addButton(withTitle: "Skip this version")
+        alert.addButton(withTitle: "Later")
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            NSWorkspace.shared.open(url)
+        case .alertSecondButtonReturn:
+            let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
+            defaults.set(version, forKey: SettingsKeys.skippedUpdateVersion)
+        default:
+            break
+        }
+    }
+
+    private func showUpToDateDialog() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.icon = NSApp.applicationIconImage
+        alert.messageText = "No Updates Available"
+        alert.informativeText = "\(appDisplayName) (\(currentVersion())) is up to date."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func showUpdateErrorDialog(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.icon = NSApp.applicationIconImage
+        alert.messageText = "Update Check Failed"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func currentVersion() -> String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
+    }
+
+    private func normalizeVersion(_ value: String) -> String {
+        var v = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if v.hasPrefix("v") || v.hasPrefix("V") {
+            v.removeFirst()
+        }
+        return v
+    }
+
+    private func isVersion(_ lhs: String, greaterThan rhs: String) -> Bool {
+        let l = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let r = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        let n = max(l.count, r.count)
+        for i in 0..<n {
+            let lv = i < l.count ? l[i] : 0
+            let rv = i < r.count ? r[i] : 0
+            if lv != rv {
+                return lv > rv
+            }
+        }
+        return false
     }
 
     func refreshStatus() {
@@ -140,8 +373,9 @@ private final class AppModel: ObservableObject {
         let quickLookPresent = appCandidates.contains {
             hasEmbeddedQuickLookExtension(in: $0)
         }
+        let importerPresentOnDisk = fm.fileExists(atPath: spotlightDst.path) || fm.fileExists(atPath: systemSpotlightDst.path)
         let info = StatusInfo(
-            importerInstalled: fm.fileExists(atPath: spotlightDst.path),
+            importerInstalled: importerPresentOnDisk || isImporterRegistered(),
             appInstalledInApplications: appInApplications,
             quickLookBundlePresent: quickLookPresent
         )
@@ -176,6 +410,16 @@ private final class AppModel: ObservableObject {
         }
     }
 
+    func autoInstallImporterIfMissing() {
+        refreshStatus()
+        guard !importerInstalled else { return }
+        install()
+        refreshStatus()
+        if importerInstalled {
+            statusText = "Spotlight importer auto-installed."
+        }
+    }
+
     func repair() {
         registerAndRefresh()
         refreshStatus()
@@ -198,6 +442,26 @@ private final class AppModel: ObservableObject {
             if fm.fileExists(atPath: legacyQuickLookDst.path) {
                 try fm.removeItem(at: legacyQuickLookDst)
             }
+            if fm.fileExists(atPath: previewContainerSettings.path) {
+                try? fm.removeItem(at: previewContainerSettings)
+            }
+            if fm.fileExists(atPath: previewSupportDir.path) {
+                try? fm.removeItem(at: previewSupportDir)
+            }
+            if fm.fileExists(atPath: previewCacheDir.path) {
+                try? fm.removeItem(at: previewCacheDir)
+            }
+            if fm.fileExists(atPath: previewContainerRoot.path) {
+                try? fm.removeItem(at: previewContainerRoot)
+                // Container roots may be protected by containermanager.
+                // Remove the Data subtree as a best effort so settings do not persist.
+                let dataDir = previewContainerRoot.appendingPathComponent("Data")
+                if fm.fileExists(atPath: dataDir.path) {
+                    try? fm.removeItem(at: dataDir)
+                }
+            }
+            UserDefaults.standard.removePersistentDomain(forName: SettingsKeys.suite)
+            run("/usr/bin/defaults", ["delete", SettingsKeys.suite])
 
             run("/usr/bin/qlmanage", ["-r"])
             run("/usr/bin/qlmanage", ["-r", "cache"])
@@ -219,6 +483,9 @@ private final class AppModel: ObservableObject {
         if fm.fileExists(atPath: spotlightDst.path) {
             run("/usr/bin/mdimport", ["-r", spotlightDst.path])
         }
+        if fm.fileExists(atPath: systemSpotlightDst.path) {
+            run("/usr/bin/mdimport", ["-r", systemSpotlightDst.path])
+        }
         for appBundle in registrationAppBundles() {
             for appexName in [quickLookAppexName, legacyQuickViewAppexName, legacyPreviewAppexName] {
                 let appex = appBundle.appendingPathComponent("Contents/PlugIns/\(appexName)")
@@ -229,6 +496,13 @@ private final class AppModel: ObservableObject {
         }
         run("/usr/bin/qlmanage", ["-r"])
         run("/usr/bin/qlmanage", ["-r", "cache"])
+    }
+
+    private func isImporterRegistered() -> Bool {
+        guard let out = runOutput("/usr/bin/mdimport", ["-L"]) else {
+            return false
+        }
+        return out.contains("Parquet.mdimporter")
     }
 
     private func registrationAppBundles() -> [URL] {
@@ -305,21 +579,39 @@ private final class AppModel: ObservableObject {
             return -1
         }
     }
+
+    private func runOutput(_ launchPath: String, _ arguments: [String]) -> String? {
+        let p = Process()
+        let out = Pipe()
+        p.executableURL = URL(fileURLWithPath: launchPath)
+        p.arguments = arguments
+        p.standardOutput = out
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
 }
 
 private struct ContentView: View {
     @ObservedObject var model: AppModel
     @State private var selection: SidebarPane? = .status
+    @State private var showUninstallConfirm = false
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
                 Label("Status", systemImage: "checkmark.shield")
                     .tag(SidebarPane.status)
-                Label("Actions", systemImage: "wrench.and.screwdriver")
-                    .tag(SidebarPane.actions)
                 Label("Quick Look Settings", systemImage: "slider.horizontal.3")
                     .tag(SidebarPane.settings)
+                Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                    .tag(SidebarPane.updates)
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
@@ -328,19 +620,14 @@ private struct ContentView: View {
                 switch selection ?? .status {
                 case .status:
                     statusPane
-                case .actions:
-                    actionsPane
                 case .settings:
                     settingsPane
+                case .updates:
+                    updatesPane
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(18)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Refresh", action: model.refreshStatus)
-                }
-            }
         }
         .frame(minWidth: 760, minHeight: 560)
         .onReceive(NotificationCenter.default.publisher(for: AppEvents.selectSidebarPane)) { note in
@@ -349,6 +636,9 @@ private struct ContentView: View {
                 let pane = SidebarPane(rawValue: raw)
             else { return }
             selection = pane
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppEvents.manualUpdateCheck)) { _ in
+            model.checkForUpdates(manual: true)
         }
     }
 
@@ -363,42 +653,40 @@ private struct ContentView: View {
             Section("Current Message") {
                 Text(model.statusText).foregroundStyle(.secondary)
             }
+
+            Section("Actions") {
+                HStack(spacing: 10) {
+                    Button("Re-Install") { model.install() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Repair Registration") { model.repair() }
+                        .buttonStyle(.bordered)
+                    Button("Refresh Status") { model.refreshStatus() }
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            Section("Danger Zone") {
+                Text("Uninstall removes the importer and Quick Look app from user locations. Finder will be restarted to unregister Quick Look plugins.")
+                    .foregroundStyle(.secondary)
+                Button("Uninstall") { showUninstallConfirm = true }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Status")
-    }
-
-    private var actionsPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Management Actions")
-                .font(.title3).fontWeight(.semibold)
-
-            HStack(spacing: 10) {
-                Button("Install") { model.install() }
-                    .buttonStyle(.borderedProminent)
-                Button("Repair") { model.repair() }
-                    .buttonStyle(.bordered)
-                Button("Refresh Status") { model.refreshStatus() }
-                    .buttonStyle(.bordered)
+        .confirmationDialog(
+            "Are you sure that you want to uninstall Parquet Quick Look and Index?",
+            isPresented: $showUninstallConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Uninstall", role: .destructive) {
+                model.uninstall()
             }
-
-            Divider()
-
-            Text("Danger Zone")
-                .font(.headline)
-            Text("Uninstall removes the importer and Quick Look app from user locations.")
-                .foregroundStyle(.secondary)
-            Button("Uninstall") { model.uninstall() }
-                .buttonStyle(.bordered)
-                .tint(.red)
-
-            Spacer()
-
-            Text(model.statusText)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove installed components from user locations and restart Finder.")
         }
-        .navigationTitle("Actions")
     }
 
     private var settingsPane: some View {
@@ -433,6 +721,25 @@ private struct ContentView: View {
                 Toggle("Hide path tokens (list/element)", isOn: $model.hideListElement)
             }
 
+            Section("Dataset Scanning") {
+                Toggle("Scan all files", isOn: $model.scanAllFiles)
+
+                HStack {
+                    Text("Max files (if not all)")
+                        .foregroundStyle(model.scanAllFiles ? .secondary : .primary)
+                    Spacer()
+                    Stepper(value: $model.maxScanFiles, in: 1...50000, step: 100) { EmptyView() }
+                        .labelsHidden()
+                    Text("\(model.maxScanFiles)")
+                        .monospacedDigit()
+                        .frame(width: 72, alignment: .trailing)
+                        .foregroundStyle(model.scanAllFiles ? .secondary : .primary)
+                }
+                .disabled(model.scanAllFiles)
+
+                Toggle("Recursive scan folders", isOn: $model.recursiveScan)
+            }
+
             Section {
                 HStack {
                     Button("Apply Settings") { model.saveSettings() }
@@ -447,6 +754,25 @@ private struct ContentView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Quick Look Settings")
+    }
+
+    private var updatesPane: some View {
+        Form {
+            Section("Update Checks") {
+                Toggle("Auto-check updates", isOn: $model.autoCheckUpdates)
+                Picker("Check interval", selection: $model.updateCheckInterval) {
+                    ForEach(UpdateCheckInterval.allCases, id: \.rawValue) { interval in
+                        Text(interval.label).tag(interval)
+                    }
+                }
+                .disabled(!model.autoCheckUpdates)
+                Button("Check for Updates Now") {
+                    model.checkForUpdates(manual: true)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Updates")
     }
 
     private func statusRow(_ label: String, _ ok: Bool) -> some View {
@@ -482,6 +808,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.window = window
 
         setupMenu()
+        DispatchQueue.main.async { [weak self] in
+            self?.model.autoInstallImporterIfMissing()
+            self?.model.autoCheckForUpdatesIfNeeded()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -508,6 +838,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openIssueTracker(_ sender: Any?) {
         NSWorkspace.shared.open(issuesURL)
+    }
+
+    @objc private func checkForUpdates(_ sender: Any?) {
+        NotificationCenter.default.post(name: AppEvents.manualUpdateCheck, object: nil)
     }
 
     private func showMainWindow() {
@@ -537,6 +871,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settingsItem.target = self
         appMenu.addItem(settingsItem)
+        let updatesItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updatesItem.target = self
+        appMenu.addItem(updatesItem)
         appMenu.addItem(NSMenuItem.separator())
 
         let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")

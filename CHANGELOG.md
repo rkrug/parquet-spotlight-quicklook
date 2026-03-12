@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-03-12
+
+- Added Quick Look folder support for parquet datasets.
+- Added dataset preview summary for folders containing parquet files:
+  - parquet file count and valid-file count
+  - total size and summed rows (footer-derived)
+  - merged schema view with existing collapsible tree rendering
+  - hive partition summary from `key=value` path segments.
+- Added dataset scan controls in Quick Look settings:
+  - `Scan all files`
+  - `Max files (if not all)`
+  - `Recursive scan folders`
+- Added update-check UX:
+  - new dedicated `Updates` tab
+  - auto-check intervals (`Daily`, `Weekly`, `Monthly`; default `Daily`)
+  - manual `Check for Updates...` action
+  - update dialog with `Open Release Page`, `Skip this version`, and `Later`
+  - up-to-date/error dialogs with app icon and current app version context.
+- Added fallback behavior for non-parquet folders by returning no preview so the standard macOS folder Quick Look remains available.
+- Merged management actions into the `Status` pane (removed separate `Actions` tab).
+- Added app auto-install of the Spotlight importer on launch when missing.
+- Updated uninstall flow:
+  - explicit confirmation prompt before uninstall
+  - warning that Finder will be restarted
+  - full cleanup of settings/preferences/cache/container data (best effort for protected container root).
+- Bumped importer, app, and extension versions to `0.4.0`.
+
 ## 0.3.0 - 2026-03-11
 
 - Standardized product naming to Apple's official term **Quick Look** (replacing prior "QuickView/Quick View" wording).

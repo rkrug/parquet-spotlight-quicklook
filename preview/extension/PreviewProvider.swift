@@ -19,12 +19,29 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var columns: [ColumnInfo] = []
     }
 
+    struct DatasetMetadata {
+        var fileCount: Int = 0
+        var validFileCount: Int = 0
+        var totalSize: UInt64 = 0
+        var totalRows: Int64 = 0
+        var columns: [ColumnInfo] = []
+        var partitionValuesByKey: [String: Set<String>] = [:]
+        var truncated = false
+    }
+
+    private struct ScanLimits {
+        static let maxPartitionValuesPerKey = 25
+    }
+
     private struct PreviewSettings {
         var expandDepth = 1
         var showAllColumns = true
         var maxColumns = 500
         var showPhysicalType = false
         var hideListElement = true
+        var scanAllFiles = false
+        var maxScanFiles = 500
+        var recursiveScan = true
     }
 
     private struct PreviewSettingsData: Codable {
@@ -33,6 +50,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let maxColumns: Int
         let showPhysicalType: Bool
         let hideListElement: Bool
+        let scanAllFiles: Bool
+        let maxScanFiles: Int
+        let recursiveScan: Bool
     }
 
     private final class ColumnTreeNode {
@@ -251,8 +271,20 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     func providePreview(for request: QLFilePreviewRequest,
                         completionHandler: @escaping (QLPreviewReply?, Error?) -> Void) {
         let path = request.fileURL.path
-        let metadata = readMetadata(at: request.fileURL)
-        let html = renderHTML(path: path, metadata: metadata)
+        let isDirectory = (try? request.fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        let settings = loadSettings()
+        let html: String
+
+        if isDirectory {
+            guard let dataset = readDatasetMetadata(at: request.fileURL, settings: settings) else {
+                completionHandler(nil, noPreviewError())
+                return
+            }
+            html = renderDatasetHTML(path: path, dataset: dataset, settings: settings)
+        } else {
+            let metadata = readMetadata(at: request.fileURL)
+            html = renderHTML(path: path, metadata: metadata)
+        }
 
         let size = CGSize(width: 1100, height: 720)
         let reply = QLPreviewReply(dataOfContentType: .html, contentSize: size) { _ in
@@ -260,6 +292,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
         reply.title = request.fileURL.lastPathComponent
         completionHandler(reply, nil)
+    }
+
+    private func noPreviewError() -> NSError {
+        NSError(domain: "QLPreviewErrorDomain", code: 3, userInfo: nil)
     }
 
     private func readMetadata(at url: URL) -> Metadata {
@@ -302,6 +338,110 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return out
         } catch {
             return out
+        }
+    }
+
+    private func readDatasetMetadata(at folderURL: URL, settings: PreviewSettings) -> DatasetMetadata? {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey]
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
+        if !settings.recursiveScan {
+            options.insert(.skipsSubdirectoryDescendants)
+        }
+        guard let enumerator = fm.enumerator(
+            at: folderURL,
+            includingPropertiesForKeys: keys,
+            options: options
+        ) else {
+            return nil
+        }
+
+        var dataset = DatasetMetadata()
+        var typeMap: [String: Set<String>] = [:]
+        var firstPhysical: [String: String] = [:]
+        let maxFilesToScan = settings.scanAllFiles ? Int.max : max(1, settings.maxScanFiles)
+
+        for case let fileURL as URL in enumerator {
+            let ext = fileURL.pathExtension.lowercased()
+            if ext != "parquet" {
+                continue
+            }
+
+            dataset.fileCount += 1
+            if dataset.fileCount > maxFilesToScan {
+                dataset.truncated = true
+                break
+            }
+
+            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 {
+                dataset.totalSize += UInt64(size)
+            }
+
+            parsePartitionSegments(from: fileURL, baseFolder: folderURL) { key, value in
+                var values = dataset.partitionValuesByKey[key] ?? Set<String>()
+                if values.count < ScanLimits.maxPartitionValuesPerKey {
+                    values.insert(value)
+                }
+                dataset.partitionValuesByKey[key] = values
+            }
+
+            let fileMetadata = readMetadata(at: fileURL)
+            if !fileMetadata.valid {
+                continue
+            }
+            dataset.validFileCount += 1
+            dataset.totalRows += max(0, fileMetadata.rowCount)
+
+            for col in fileMetadata.columns {
+                var types = typeMap[col.name] ?? Set<String>()
+                types.insert(col.logicalType)
+                typeMap[col.name] = types
+                if firstPhysical[col.name] == nil {
+                    firstPhysical[col.name] = col.physicalType
+                }
+            }
+        }
+
+        if dataset.fileCount == 0 {
+            return nil
+        }
+
+        let sortedColumns = typeMap.keys.sorted()
+        dataset.columns = sortedColumns.map { name in
+            let logicals = (typeMap[name] ?? []).sorted()
+            let logicalType = logicals.count <= 1
+                ? (logicals.first ?? "unknown")
+                : "mixed<\(logicals.joined(separator: " | "))>"
+            return ColumnInfo(
+                name: name,
+                logicalType: logicalType,
+                physicalType: firstPhysical[name] ?? "UNKNOWN"
+            )
+        }
+
+        return dataset
+    }
+
+    private func parsePartitionSegments(from fileURL: URL, baseFolder: URL, visit: (String, String) -> Void) {
+        let basePath = baseFolder.standardizedFileURL.path
+        let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
+        guard parentPath.hasPrefix(basePath) else {
+            return
+        }
+        let relative = String(parentPath.dropFirst(basePath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if relative.isEmpty {
+            return
+        }
+        for segment in relative.split(separator: "/").map(String.init) {
+            guard let eq = segment.firstIndex(of: "=") else {
+                continue
+            }
+            let key = String(segment[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(segment[segment.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else {
+                continue
+            }
+            visit(key, value)
         }
     }
 
@@ -797,7 +937,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 showAllColumns: decoded.showAllColumns,
                 maxColumns: max(1, decoded.maxColumns),
                 showPhysicalType: decoded.showPhysicalType,
-                hideListElement: decoded.hideListElement
+                hideListElement: decoded.hideListElement,
+                scanAllFiles: decoded.scanAllFiles,
+                maxScanFiles: max(1, decoded.maxScanFiles),
+                recursiveScan: decoded.recursiveScan
             )
         }
 
@@ -810,6 +953,14 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             s.maxColumns = maxCols > 0 ? maxCols : 500
             s.showPhysicalType = defaults.bool(forKey: "showPhysicalType")
             s.hideListElement = defaults.bool(forKey: "hideListElement")
+            s.scanAllFiles = defaults.bool(forKey: "scanAllFiles")
+            let maxScan = defaults.integer(forKey: "maxScanFiles")
+            s.maxScanFiles = maxScan > 0 ? maxScan : 500
+            if defaults.object(forKey: "recursiveScan") == nil {
+                s.recursiveScan = true
+            } else {
+                s.recursiveScan = defaults.bool(forKey: "recursiveScan")
+            }
         }
         return s
     }
@@ -1020,6 +1171,145 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           <table>
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(rows)</tbody>
+          </table>
+        </body>
+        </html>
+        """
+    }
+
+    private func renderDatasetHTML(path: String, dataset: DatasetMetadata, settings: PreviewSettings) -> String {
+        let showCount = settings.showAllColumns
+            ? dataset.columns.count
+            : min(dataset.columns.count, max(1, settings.maxColumns))
+        let hidden = max(0, dataset.columns.count - showCount)
+        let displayRows = buildDisplayRows(columns: dataset.columns.prefix(showCount), settings: settings)
+
+        let partitionKeys = dataset.partitionValuesByKey.keys.sorted()
+        var partitionRows = ""
+        if partitionKeys.isEmpty {
+            partitionRows = "<tr><td colspan=\"2\" class=\"muted\">No hive partition segments (key=value) detected.</td></tr>"
+        } else {
+            for key in partitionKeys {
+                let values = (dataset.partitionValuesByKey[key] ?? []).sorted()
+                let joined = values.joined(separator: ", ")
+                partitionRows += "<tr><td class=\"group\">\(esc(key))</td><td>\(esc(joined))</td></tr>"
+            }
+        }
+
+        var schemaRows = ""
+        if showCount == 0 {
+            schemaRows += "<tr><td colspan=\"3\" class=\"muted\">No columns parsed from parquet footer metadata.</td></tr>"
+        } else {
+            for (idx, r) in displayRows.enumerated() {
+                let indentPx = r.indent * 18
+                let nameClass = r.isGroup ? "group" : "field"
+                let typeText = esc(r.type)
+                let hiddenClass = (r.parentID == nil) ? "" : " hidden"
+                let parentAttr = (r.parentID == nil) ? "" : " data-parent=\"\(r.parentID!)\""
+                let toggle = r.isGroup
+                    ? "<button id=\"btn-\(r.id)\" class=\"toggle\" data-expanded=\"false\" onclick=\"toggleNode(\(r.id));return false;\">▸</button>"
+                    : "<span class=\"spacer\"></span>"
+                schemaRows += "<tr id=\"row-\(r.id)\" class=\"\(hiddenClass)\"\(parentAttr)><td>\(idx + 1)</td><td class=\"\(nameClass)\" style=\"padding-left:\(indentPx + 8)px\">\(toggle)\(esc(r.name))</td><td>\(typeText)</td></tr>"
+            }
+            if hidden > 0 {
+                schemaRows += "<tr><td colspan=\"3\" class=\"muted\">+ \(hidden) more columns not shown (change in Parquet Manager settings)</td></tr>"
+            }
+        }
+
+        let notes = dataset.truncated
+            ? "<div class=\"muted\" style=\"margin:8px 0 0\">Scan truncated after \(settings.maxScanFiles) parquet files.</div>"
+            : ""
+
+        return """
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset=\"utf-8\" />
+          <style>
+            body{font-family:-apple-system,system-ui,sans-serif;margin:18px;color:#1f2937;font-size:12px}
+            h1{font-size:20px;margin:0 0 10px}
+            h2{font-size:14px;margin:18px 0 8px}
+            .muted{color:#6b7280;font-size:12px}
+            .meta{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin:14px 0}
+            .card{background:#f5f7fa;border:1px solid #dfe5ec;border-radius:8px;padding:10px}
+            .label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em}
+            .val{font-size:16px;font-weight:600;margin-top:4px}
+            table{width:100%;border-collapse:collapse;font-size:12px}
+            th,td{padding:7px 8px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
+            th{background:#f8fafc;font-weight:600}
+            td.group{font-weight:600;color:#374151}
+            td.field{color:#1f2937}
+            tr.hidden{display:none}
+            .toggle{width:16px;height:16px;border:none;border-radius:3px;background:transparent;color:#475569;font-size:13px;line-height:14px;cursor:pointer;margin-right:6px;padding:0;vertical-align:middle}
+            .toggle:hover{background:#e5e7eb;color:#111827}
+            .spacer{display:inline-block;width:18px;margin-right:6px}
+          </style>
+          <script>
+            function childRows(id){
+              return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
+            }
+            function collapseRec(id){
+              const btn=document.getElementById('btn-'+id);
+              if(btn){btn.dataset.expanded='false';btn.textContent='▸';}
+              childRows(id).forEach(function(row){
+                row.classList.add('hidden');
+                const cid=parseInt(row.id.replace('row-',''),10);
+                collapseRec(cid);
+              });
+            }
+            function toggleNode(id){
+              const btn=document.getElementById('btn-'+id);
+              if(!btn){return;}
+              const expanded=(btn.dataset.expanded==='true');
+              if(expanded){ collapseRec(id); return; }
+              btn.dataset.expanded='true';
+              btn.textContent='▾';
+              childRows(id).forEach(function(row){ row.classList.remove('hidden'); });
+            }
+            function expandToDepth(depth){
+              if(depth <= 0){ return; }
+              for(let d=0; d<depth; d++){
+                const current=Array.from(document.querySelectorAll('button.toggle[data-expanded=\"false\"]'));
+                if(current.length===0){ break; }
+                current.forEach(function(btn){
+                  const id=parseInt(btn.id.replace('btn-',''),10);
+                  const row=document.getElementById('row-'+id);
+                  if(!row){ return; }
+                  const parent=row.getAttribute('data-parent');
+                  if(parent){
+                    const prow=document.getElementById('row-'+parent);
+                    if(prow && prow.classList.contains('hidden')){ return; }
+                  }
+                  toggleNode(id);
+                });
+              }
+            }
+            window.addEventListener('DOMContentLoaded', function(){ expandToDepth(\(settings.expandDepth)); });
+          </script>
+        </head>
+        <body>
+          <h1>Parquet Dataset Quick Look</h1>
+          <div class=\"muted\">\(esc(path))</div>
+
+          <div class=\"meta\">
+            <div class=\"card\"><div class=\"label\">Parquet Files</div><div class=\"val\">\(esc(formatInt(Int64(dataset.fileCount))))</div></div>
+            <div class=\"card\"><div class=\"label\">Valid Files</div><div class=\"val\">\(esc(formatInt(Int64(dataset.validFileCount))))</div></div>
+            <div class=\"card\"><div class=\"label\">Total Size</div><div class=\"val\">\(esc(formatBytes(dataset.totalSize)))</div></div>
+            <div class=\"card\"><div class=\"label\">Rows (sum)</div><div class=\"val\">\(esc(formatInt(dataset.totalRows)))</div></div>
+            <div class=\"card\"><div class=\"label\">Columns (merged)</div><div class=\"val\">\(esc(formatInt(Int64(dataset.columns.count))))</div></div>
+          </div>
+          \(notes)
+
+          <h2>Hive Partitions</h2>
+          <table>
+            <thead><tr><th>Key</th><th>Values</th></tr></thead>
+            <tbody>\(partitionRows)</tbody>
+          </table>
+
+          <h2>Merged Schema</h2>
+          <table>
+            <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
+            <tbody>\(schemaRows)</tbody>
           </table>
         </body>
         </html>
