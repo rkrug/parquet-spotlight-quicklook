@@ -86,11 +86,67 @@ private final class AppModel: ObservableObject {
     @Published var recursiveScan = true
     @Published var autoCheckUpdates = true
     @Published var updateCheckInterval: UpdateCheckInterval = .daily
+    @Published private(set) var recentErrors: [String] = []
     private let appDisplayName = "Parquet Quick Look and Index"
+    private let maxRecentErrors = 20
+
+    private struct SemanticVersion: Comparable {
+        let major: Int
+        let minor: Int
+        let patch: Int
+
+        init(major: Int, minor: Int, patch: Int) {
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        static let zero = SemanticVersion(major: 0, minor: 0, patch: 0)
+
+        init?(looseVersion value: String) {
+            var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.hasPrefix("v") || raw.hasPrefix("V") {
+                raw.removeFirst()
+            }
+            let parts = raw.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+            guard
+                let major = Int(parts[0]),
+                let minor = Int(parts[1]),
+                let patch = Int(parts[2])
+            else {
+                return nil
+            }
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        init?(strictTag value: String) {
+            let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard raw.hasPrefix("v") else { return nil }
+            guard !raw.contains("-"), !raw.contains("+") else { return nil }
+            self.init(looseVersion: String(raw.dropFirst()))
+        }
+
+        var normalized: String {
+            "\(major).\(minor).\(patch)"
+        }
+
+        static func < (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
+            if lhs.major != rhs.major { return lhs.major < rhs.major }
+            if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+            return lhs.patch < rhs.patch
+        }
+    }
 
     private struct GitHubLatestRelease: Decodable {
         let tag_name: String
         let html_url: String
+    }
+
+    private struct GitHubErrorResponse: Decodable {
+        let message: String
     }
 
     private let fm = FileManager.default
@@ -114,11 +170,22 @@ private final class AppModel: ObservableObject {
         .appendingPathComponent("Library/Application Support/ParquetPreview")
     private let previewCacheDir = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Caches/com.rkrug.parquetindexer.previewhost.preview")
+    private let expectedRepoPath = "/rkrug/parquet-spotlight-quicklook"
+    private let expectedGitHubHost = "github.com"
+    private let expectedGitHubAPIHost = "api.github.com"
+    private let expectedReleasesLatestPath = "/repos/rkrug/parquet-spotlight-quicklook/releases/latest"
     private let releaseCheckURL = URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")!
 
     init() {
         loadSettings()
         refreshStatus()
+    }
+
+    func setStatus(_ message: String, error: Bool = false) {
+        statusText = message
+        if error {
+            appendError(message)
+        }
     }
 
     func loadSettings() {
@@ -214,7 +281,7 @@ private final class AppModel: ObservableObject {
 
         run("/usr/bin/qlmanage", ["-r"])
         run("/usr/bin/qlmanage", ["-r", "cache"])
-        statusText = "Settings saved. Reopen Quick Look to apply."
+        setStatus("Settings saved. Reopen Quick Look to apply.")
     }
 
     func resetSettings() {
@@ -251,19 +318,50 @@ private final class AppModel: ObservableObject {
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("ParquetQuickLookAndIndex", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
 
             if let error {
                 DispatchQueue.main.async {
-                    if manual { self.showUpdateErrorDialog("Could not check for updates: \(error.localizedDescription)") }
+                    if manual {
+                        self.showUpdateErrorDialog(self.describeNetworkError(error))
+                    }
+                }
+                return
+            }
+
+            guard let http = response as? HTTPURLResponse else {
+                DispatchQueue.main.async {
+                    if manual {
+                        self.showUpdateErrorDialog("Could not check for updates: invalid server response.")
+                    }
+                }
+                return
+            }
+
+            guard self.isTrustedReleaseAPIResponseURL(http.url) else {
+                DispatchQueue.main.async {
+                    if manual {
+                        self.showUpdateErrorDialog("Could not check for updates: response origin was not trusted.")
+                    }
+                }
+                return
+            }
+
+            guard (200...299).contains(http.statusCode) else {
+                DispatchQueue.main.async {
+                    if manual {
+                        self.showUpdateErrorDialog(self.describeHTTPError(statusCode: http.statusCode, data: data))
+                    }
                 }
                 return
             }
 
             guard let data else {
                 DispatchQueue.main.async {
-                    if manual { self.showUpdateErrorDialog("Could not check for updates: no response data.") }
+                    if manual {
+                        self.showUpdateErrorDialog("Could not check for updates: empty server response.")
+                    }
                 }
                 return
             }
@@ -275,12 +373,20 @@ private final class AppModel: ObservableObject {
                 return
             }
 
-            let latestVersion = self.normalizeVersion(release.tag_name)
-            let currentVersion = self.currentVersion()
+            guard let latestVersion = SemanticVersion(strictTag: release.tag_name) else {
+                DispatchQueue.main.async {
+                    if manual {
+                        self.showUpdateErrorDialog("Could not check for updates: latest release tag is not valid semver (expected vX.Y.Z).")
+                    }
+                }
+                return
+            }
+
+            let currentVersion = SemanticVersion(looseVersion: self.currentVersion()) ?? .zero
             let skippedVersion = defaults.string(forKey: SettingsKeys.skippedUpdateVersion) ?? ""
 
-            if self.isVersion(latestVersion, greaterThan: currentVersion) {
-                if !manual && latestVersion == skippedVersion {
+            if latestVersion > currentVersion {
+                if !manual && latestVersion.normalized == skippedVersion {
                     return
                 }
                 guard let releaseURL = URL(string: release.html_url) else {
@@ -289,8 +395,16 @@ private final class AppModel: ObservableObject {
                     }
                     return
                 }
+                guard self.isTrustedReleasePageURL(releaseURL, expectedTag: release.tag_name) else {
+                    DispatchQueue.main.async {
+                        if manual {
+                            self.showUpdateErrorDialog("Could not check for updates: latest release page URL is not trusted.")
+                        }
+                    }
+                    return
+                }
                 DispatchQueue.main.async {
-                    self.showUpdateAvailableDialog(version: latestVersion, url: releaseURL)
+                    self.showUpdateAvailableDialog(version: "v\(latestVersion.normalized)", skippedVersion: latestVersion.normalized, url: releaseURL)
                 }
             } else if manual {
                 DispatchQueue.main.async {
@@ -300,7 +414,7 @@ private final class AppModel: ObservableObject {
         }.resume()
     }
 
-    private func showUpdateAvailableDialog(version: String, url: URL) {
+    private func showUpdateAvailableDialog(version: String, skippedVersion: String, url: URL) {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
@@ -315,7 +429,7 @@ private final class AppModel: ObservableObject {
             NSWorkspace.shared.open(url)
         case .alertSecondButtonReturn:
             let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
-            defaults.set(version, forKey: SettingsKeys.skippedUpdateVersion)
+            defaults.set(skippedVersion, forKey: SettingsKeys.skippedUpdateVersion)
         default:
             break
         }
@@ -332,6 +446,7 @@ private final class AppModel: ObservableObject {
     }
 
     private func showUpdateErrorDialog(_ message: String) {
+        appendError(message)
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.icon = NSApp.applicationIconImage
@@ -345,26 +460,70 @@ private final class AppModel: ObservableObject {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
-    private func normalizeVersion(_ value: String) -> String {
-        var v = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if v.hasPrefix("v") || v.hasPrefix("V") {
-            v.removeFirst()
-        }
-        return v
+    private func isTrustedReleaseAPIResponseURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        guard url.scheme?.lowercased() == "https" else { return false }
+        guard url.host?.lowercased() == expectedGitHubAPIHost else { return false }
+        return normalizedPath(url.path) == expectedReleasesLatestPath
     }
 
-    private func isVersion(_ lhs: String, greaterThan rhs: String) -> Bool {
-        let l = lhs.split(separator: ".").map { Int($0) ?? 0 }
-        let r = rhs.split(separator: ".").map { Int($0) ?? 0 }
-        let n = max(l.count, r.count)
-        for i in 0..<n {
-            let lv = i < l.count ? l[i] : 0
-            let rv = i < r.count ? r[i] : 0
-            if lv != rv {
-                return lv > rv
+    private func isTrustedReleasePageURL(_ url: URL, expectedTag: String) -> Bool {
+        guard url.scheme?.lowercased() == "https" else { return false }
+        guard url.host?.lowercased() == expectedGitHubHost else { return false }
+        let expectedPath = "\(expectedRepoPath)/releases/tag/\(expectedTag)"
+        return normalizedPath(url.path) == expectedPath
+    }
+
+    private func normalizedPath(_ path: String) -> String {
+        var normalized = path
+        while normalized.count > 1 && normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private func describeNetworkError(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "Could not check for updates: you appear to be offline."
+            case .timedOut:
+                return "Could not check for updates: request timed out."
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return "Could not check for updates: cannot reach GitHub."
+            default:
+                return "Could not check for updates: \(urlError.localizedDescription)"
             }
         }
-        return false
+        return "Could not check for updates: \(error.localizedDescription)"
+    }
+
+    private func describeHTTPError(statusCode: Int, data: Data?) -> String {
+        let apiMessage = decodeGitHubErrorMessage(data)
+        switch statusCode {
+        case 403:
+            if let apiMessage, !apiMessage.isEmpty {
+                return "Could not check for updates: GitHub access was denied (\(apiMessage))."
+            }
+            return "Could not check for updates: GitHub API rate limit or access denied (HTTP 403)."
+        case 404:
+            return "Could not check for updates: release endpoint not found (HTTP 404)."
+        case 429:
+            return "Could not check for updates: too many requests (HTTP 429)."
+        default:
+            if let apiMessage, !apiMessage.isEmpty {
+                return "Could not check for updates: HTTP \(statusCode) (\(apiMessage))."
+            }
+            return "Could not check for updates: HTTP \(statusCode)."
+        }
+    }
+
+    private func decodeGitHubErrorMessage(_ data: Data?) -> String? {
+        guard let data else { return nil }
+        guard let decoded = try? JSONDecoder().decode(GitHubErrorResponse.self, from: data) else {
+            return nil
+        }
+        return decoded.message.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func refreshStatus() {
@@ -386,7 +545,7 @@ private final class AppModel: ObservableObject {
 
     func install() {
         guard let bundledImporter = Bundle.main.url(forResource: "Parquet", withExtension: "mdimporter") else {
-            statusText = "Install failed: bundled importer missing."
+            setStatus("Install failed: bundled importer missing.", error: true)
             return
         }
 
@@ -404,9 +563,9 @@ private final class AppModel: ObservableObject {
             run("/usr/bin/xattr", ["-cr", spotlightDst.path])
             registerAndRefresh()
             refreshStatus()
-            statusText = "Install complete."
+            setStatus("Install complete.")
         } catch {
-            statusText = "Install failed: \(error.localizedDescription)"
+            setStatus("Install failed: \(error.localizedDescription)", error: true)
         }
     }
 
@@ -416,14 +575,14 @@ private final class AppModel: ObservableObject {
         install()
         refreshStatus()
         if importerInstalled {
-            statusText = "Spotlight importer auto-installed."
+            setStatus("Spotlight importer auto-installed.")
         }
     }
 
     func repair() {
         registerAndRefresh()
         refreshStatus()
-        statusText = "Repair actions completed."
+        setStatus("Repair actions completed.")
     }
 
     func uninstall() {
@@ -470,12 +629,12 @@ private final class AppModel: ObservableObject {
             // Remove this app asynchronously after termination.
             let appPath = Bundle.main.bundleURL.path.replacingOccurrences(of: "\"", with: "\\\"")
             run("/bin/sh", ["-lc", "(sleep 1; rm -rf \"\(appPath)\") >/dev/null 2>&1 &"])
-            statusText = "Uninstall complete. App will close."
+            setStatus("Uninstall complete. App will close.")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 NSApp.terminate(nil)
             }
         } catch {
-            statusText = "Uninstall failed: \(error.localizedDescription)"
+            setStatus("Uninstall failed: \(error.localizedDescription)", error: true)
         }
     }
 
@@ -566,6 +725,182 @@ private final class AppModel: ObservableObject {
         return resolved.path.hasPrefix("/Applications/") || resolved.path.hasPrefix(userApplications)
     }
 
+    func copyDiagnosticReport() {
+        let report = diagnosticReport()
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(report, forType: .string)
+        setStatus("Diagnostic report copied to clipboard.")
+    }
+
+    private func diagnosticReport() -> String {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let current = currentVersion()
+        let extensionVersion = embeddedQuickLookVersion()
+        let importerVersion = embeddedImporterVersion()
+        let appPath = anonymizePath(Bundle.main.bundleURL.path)
+        let importerUserPath = anonymizePath(spotlightDst.path)
+        let importerSystemPath = anonymizePath(systemSpotlightDst.path)
+        let qlFromMain = anonymizePath(Bundle.main.bundleURL.appendingPathComponent("Contents/PlugIns/\(quickLookAppexName)").path)
+        let mdimportList = filteredCommandSnapshot("/usr/bin/mdimport", ["-L"], includePatterns: ["parquet", "mdimporter"])
+        let pluginkitList = filteredCommandSnapshot("/usr/bin/pluginkit", ["-m", "-A"], includePatterns: ["parquet", "quicklook", "quick look", "qlgenerator"])
+        let qlList = filteredCommandSnapshot("/usr/bin/qlmanage", ["-m", "plugins"], includePatterns: ["parquet", "quicklook", "quick look", "qlgenerator"])
+
+        let bundleCandidates = candidateAppBundles().map { bundle -> String in
+            let exists = fm.fileExists(atPath: bundle.path)
+            let inApps = isAppInApplications(bundle)
+            let hasExt = hasEmbeddedQuickLookExtension(in: bundle)
+            return "- \(anonymizePath(bundle.path)) | exists=\(exists) | inApplications=\(inApps) | hasQuickLookExt=\(hasExt)"
+        }.joined(separator: "\n")
+
+        let errors = recentErrors.isEmpty
+            ? "- (none)"
+            : recentErrors.map { "- \($0)" }.joined(separator: "\n")
+
+        let text = """
+        # Parquet Quick Look and Index Diagnostics
+        Generated: \(now)
+
+        ## App
+        - appVersion: \(current)
+        - extensionVersion: \(extensionVersion)
+        - importerVersion: \(importerVersion)
+        - appBundlePath: \(appPath)
+
+        ## Status Snapshot
+        - importerInstalled: \(importerInstalled)
+        - appInstalledInApplications: \(appInstalledInApplications)
+        - quickLookBundlePresent: \(quickLookBundlePresent)
+        - statusText: \(statusText)
+
+        ## Important Paths
+        - userImporterPath: \(importerUserPath) (exists: \(fm.fileExists(atPath: spotlightDst.path)))
+        - systemImporterPath: \(importerSystemPath) (exists: \(fm.fileExists(atPath: systemSpotlightDst.path)))
+        - mainQuickLookAppexPath: \(qlFromMain) (exists: \(fm.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/PlugIns/\(quickLookAppexName)").path)))
+
+        ## App Bundle Candidates
+        \(bundleCandidates)
+
+        ## Registration Snapshots
+        ### mdimport -L (filtered)
+        \(mdimportList)
+
+        ### pluginkit -m -A (filtered)
+        \(pluginkitList)
+
+        ### qlmanage -m plugins (filtered)
+        \(qlList)
+
+        ## Settings
+        - expandDepth: \(expandDepth)
+        - showAllColumns: \(showAllColumns)
+        - maxColumns: \(maxColumns)
+        - showPhysicalType: \(showPhysicalType)
+        - hideListElement: \(hideListElement)
+        - scanAllFiles: \(scanAllFiles)
+        - maxScanFiles: \(maxScanFiles)
+        - recursiveScan: \(recursiveScan)
+        - autoCheckUpdates: \(autoCheckUpdates)
+        - updateCheckInterval: \(updateCheckInterval.rawValue)
+
+        ## Recent Errors
+        \(errors)
+        """
+        return sanitizeForDiagnostics(text)
+    }
+
+    private func filteredCommandSnapshot(_ launchPath: String, _ arguments: [String], includePatterns: [String]) -> String {
+        guard let captured = runCapture(launchPath, arguments) else {
+            return "(command failed to run)"
+        }
+        let combined = ([captured.stdout, captured.stderr].joined(separator: "\n"))
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+
+        let needles = includePatterns.map { $0.lowercased() }
+        let filtered = combined.filter { line in
+            let l = line.lowercased()
+            return needles.contains { l.contains($0) }
+        }
+
+        if filtered.isEmpty {
+            return "(no parquet-related entries found)"
+        }
+        let clipped = filtered.prefix(120).joined(separator: "\n")
+        return clipped
+    }
+
+    private func embeddedQuickLookVersion() -> String {
+        let appexInfo = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/PlugIns/\(quickLookAppexName)/Contents/Info.plist")
+        return bundleVersionString(fromInfoPlistAt: appexInfo) ?? "unknown"
+    }
+
+    private func embeddedImporterVersion() -> String {
+        let importerInfo = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/Parquet.mdimporter/Contents/Info.plist")
+        return bundleVersionString(fromInfoPlistAt: importerInfo) ?? "unknown"
+    }
+
+    private func bundleVersionString(fromInfoPlistAt url: URL) -> String? {
+        guard let dict = NSDictionary(contentsOf: url) as? [String: Any] else {
+            return nil
+        }
+        if let short = dict["CFBundleShortVersionString"] as? String {
+            return short
+        }
+        return dict["CFBundleVersion"] as? String
+    }
+
+    private func appendError(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let stamped = "[\(formatter.string(from: Date()))] \(message)"
+        recentErrors.append(sanitizeForDiagnostics(stamped))
+        if recentErrors.count > maxRecentErrors {
+            recentErrors.removeFirst(recentErrors.count - maxRecentErrors)
+        }
+    }
+
+    private func anonymizePath(_ path: String) -> String {
+        var output = path
+        let home = NSHomeDirectory()
+        if output.hasPrefix(home) {
+            output = "~" + output.dropFirst(home.count)
+        }
+        output = output.replacingOccurrences(
+            of: "/Users/[^/\\s]+",
+            with: "/Users/<user>",
+            options: .regularExpression
+        )
+        return output
+    }
+
+    private func sanitizeForDiagnostics(_ raw: String) -> String {
+        var text = raw
+        text = text.replacingOccurrences(
+            of: "/Users/[^/\\s]+",
+            with: "/Users/<user>",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
+            with: "<redacted-email>",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(
+            of: "\\b(ghp|github_pat)_[A-Za-z0-9_]+\\b",
+            with: "<redacted-token>",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?i)\\b(api[_-]?key|token|password|secret)\\s*[:=]\\s*[^\\s,;]+",
+            with: "$1=<redacted>",
+            options: .regularExpression
+        )
+        return text
+    }
+
     @discardableResult
     private func run(_ launchPath: String, _ arguments: [String]) -> Int32 {
         let p = Process()
@@ -574,25 +909,48 @@ private final class AppModel: ObservableObject {
         do {
             try p.run()
             p.waitUntilExit()
-            return p.terminationStatus
+            let status = p.terminationStatus
+            if status != 0 {
+                appendError("Command failed (\(status)): \(launchPath) \(arguments.joined(separator: " "))")
+            }
+            return status
         } catch {
+            appendError("Command launch failed: \(launchPath) (\(error.localizedDescription))")
             return -1
         }
     }
 
     private func runOutput(_ launchPath: String, _ arguments: [String]) -> String? {
+        guard let captured = runCapture(launchPath, arguments) else {
+            return nil
+        }
+        return captured.stdout
+    }
+
+    private func runCapture(_ launchPath: String, _ arguments: [String]) -> (status: Int32, stdout: String, stderr: String)? {
         let p = Process()
         let out = Pipe()
+        let err = Pipe()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = arguments
         p.standardOutput = out
-        p.standardError = Pipe()
+        p.standardError = err
         do {
             try p.run()
             p.waitUntilExit()
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let stdout = String(data: outData, encoding: .utf8) ?? ""
+            let stderr = String(data: errData, encoding: .utf8) ?? ""
+            let status = p.terminationStatus
+            if status != 0 {
+                let errMsg = stderr.isEmpty ? stdout : stderr
+                let snippet = errMsg.split(separator: "\n").prefix(1).joined(separator: "\n")
+                appendError("Command failed (\(status)): \(launchPath) \(arguments.joined(separator: " ")) \(snippet)")
+            }
+            return (status: status, stdout: stdout, stderr: stderr)
         } catch {
+            appendError("Command launch failed: \(launchPath) (\(error.localizedDescription))")
             return nil
         }
     }
@@ -662,6 +1020,21 @@ private struct ContentView: View {
                         .buttonStyle(.bordered)
                     Button("Refresh Status") { model.refreshStatus() }
                         .buttonStyle(.bordered)
+                    Button("Copy Diagnostic Report") { model.copyDiagnosticReport() }
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            Section("Recent Errors") {
+                if model.recentErrors.isEmpty {
+                    Text("No recent errors captured.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(model.recentErrors.enumerated()), id: \.offset) { _, entry in
+                        Text(entry)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                    }
                 }
             }
 
@@ -831,7 +1204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let bundledNews = Bundle.main.url(forResource: "NEWS", withExtension: "md") {
             NSWorkspace.shared.open(bundledNews)
         } else {
-            model.statusText = "Could not open NEWS.md (missing from app bundle)."
+            model.setStatus("Could not open NEWS.md (missing from app bundle).", error: true)
             showMainWindow()
         }
     }

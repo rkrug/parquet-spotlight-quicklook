@@ -9,7 +9,10 @@
 - Manager UI now combines status and actions in one pane.
 - Added dedicated `Updates` tab with interval-based update checks and manual update check action.
 - Update dialog now supports `Skip this version` and includes app/version context.
+- Hardened update checks with strict trusted URL + semver tag validation and clearer network/API error messages.
+- Added `Copy Diagnostic Report` in-app action with anonymized troubleshooting output (status, versions, paths, plugin registrations, recent errors).
 - Uninstall now performs full settings/data cleanup (best effort) and restarts Finder.
+- Added rollback guidance in README for reverting to a previous release quickly.
 
 ## 0.3.0 - 2026-03-11
 

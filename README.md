@@ -15,6 +15,7 @@ This project provides:
   - Arrow-style logical scalar type labels where available
 - a small GUI manager app (`Parquet Quick Look and Index.app`) with:
   - `Re-Install`, `Repair Registration`, and `Uninstall` actions
+  - `Copy Diagnostic Report` action for support/issue reports (anonymized)
   - Quick Look rendering settings (schema display + dataset scan controls)
   - dedicated `Updates` tab for release checks (`Daily`/`Weekly`/`Monthly`)
   - automatic importer install on app launch if missing
@@ -100,6 +101,25 @@ Unsigned app note (important):
 - On first launch, macOS may block the app with a security warning.
 - If blocked, right-click the app and choose `Open`, or go to:
   - `System Settings -> Privacy & Security -> Open Anyway`
+
+## Rollback (Revert To A Previous Version)
+
+If a new release causes problems:
+
+1. Uninstall current version (recommended):
+```bash
+./scripts/uninstall.sh
+```
+2. Download an older DMG from:
+   - [GitHub Releases](https://github.com/rkrug/parquet-spotlight-quicklook/releases)
+3. Install that older app and run `Re-Install` (or `Repair Registration`) once.
+
+Optional verification after rollback:
+
+```bash
+mdimport -t -d2 /path/to/file.parquet
+qlmanage -p /path/to/file.parquet
+```
 
 ## Install
 

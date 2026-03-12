@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
   - manual `Check for Updates...` action
   - update dialog with `Open Release Page`, `Skip this version`, and `Later`
   - up-to-date/error dialogs with app icon and current app version context.
+- Hardened update checks:
+  - pinned trusted GitHub API/release URL hosts and paths
+  - strict release tag validation (`vX.Y.Z`) before version comparison
+  - clearer offline/timeout/HTTP/rate-limit error messages.
+- Added in-app diagnostics export (`Copy Diagnostic Report`) for issue reporting:
+  - includes plugin status, key paths, versions, registration snapshots, settings, and recent errors
+  - anonymizes usernames and redacts common secret/token patterns before copying.
 - Added fallback behavior for non-parquet folders by returning no preview so the standard macOS folder Quick Look remains available.
 - Merged management actions into the `Status` pane (removed separate `Actions` tab).
 - Added app auto-install of the Spotlight importer on launch when missing.
@@ -27,6 +34,7 @@ All notable changes to this project will be documented in this file.
   - explicit confirmation prompt before uninstall
   - warning that Finder will be restarted
   - full cleanup of settings/preferences/cache/container data (best effort for protected container root).
+- Added rollback documentation with a short "revert to previous version" path in `README.md`.
 - Bumped importer, app, and extension versions to `0.4.0`.
 
 ## 0.3.0 - 2026-03-11
