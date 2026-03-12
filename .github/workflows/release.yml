@@ -21,7 +21,7 @@ jobs:
         run: ./scripts/build.sh
 
       - name: Package DMG/ZIP/SHA256
-        shell: zsh
+        shell: bash
         run: |
           set -euo pipefail
 
