@@ -9,6 +9,16 @@ fail() {
   exit 1
 }
 
+contains_fixed() {
+  local needle="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -Fq "$needle" "$file"
+  else
+    grep -Fq "$needle" "$file"
+  fi
+}
+
 expect_success() {
   local label="$1"
   shift
@@ -44,31 +54,31 @@ expect_success "scripts/build.sh should succeed" ./scripts/build.sh
 
 echo "==> [2/6] Uninstall dry-run smoke test"
 expect_success "scripts/uninstall.sh --dry-run should succeed" ./scripts/uninstall.sh --dry-run
-if ! rg -Fq "Dry run enabled" /tmp/parquet_script_test.out; then
+if ! contains_fixed "Dry run enabled" /tmp/parquet_script_test.out; then
   fail "uninstall dry-run output missing expected marker"
 fi
 
 echo "==> [3/6] Release script help smoke test"
 expect_success "scripts/release.sh --help should succeed" ./scripts/release.sh --help
-if ! rg -Fq "Usage: ./scripts/release.sh" /tmp/parquet_script_test.out; then
+if ! contains_fixed "Usage: ./scripts/release.sh" /tmp/parquet_script_test.out; then
   fail "release help output missing usage text"
 fi
 
 echo "==> [4/6] Release script invalid tag guard"
 expect_failure "scripts/release.sh should reject invalid tags" ./scripts/release.sh invalid-tag
-if ! rg -Fq "error: tag must look like" /tmp/parquet_script_test.err; then
+if ! contains_fixed "error: tag must look like" /tmp/parquet_script_test.err; then
   fail "invalid-tag check missing expected error text"
 fi
 
 echo "==> [5/6] Release script notes-file guard"
 expect_failure "scripts/release.sh should fail when --notes file is missing" ./scripts/release.sh v0.4.0 --notes /tmp/does-not-exist-notes.md
-if ! rg -Fq "error: notes file does not exist" /tmp/parquet_script_test.err; then
+if ! contains_fixed "error: notes file does not exist" /tmp/parquet_script_test.err; then
   fail "missing-notes check missing expected error text"
 fi
 
 echo "==> [6/6] Core logic test harness"
 expect_success "scripts/test_core.sh should succeed" ./scripts/test_core.sh
-if ! rg -Fq "PASS: core logic tests completed" /tmp/parquet_script_test.out; then
+if ! contains_fixed "PASS: core logic tests completed" /tmp/parquet_script_test.out; then
   fail "core test harness did not report success"
 fi
 
