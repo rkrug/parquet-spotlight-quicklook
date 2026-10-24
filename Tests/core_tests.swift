@@ -186,10 +186,58 @@ func runFooterFixtureTests(fixturesDir: String) {
     let many = (1...100).map { "k\($0)=v" }.joined(separator: "/")
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
+    runDatasetTests(fixturesDir: fixturesDir)
+
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
     assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
+// Builds a small hive-partitioned dataset from the fixtures in a temporary folder.
+private func runDatasetTests(fixturesDir: String) {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("parquet-dataset-test-\(getpid())")
+    defer { try? fm.removeItem(at: root) }
+    let layout = [
+        ("year=2024/region=EU", "flat.parquet"),
+        ("year=2024/region=US", "flat.parquet"),
+        ("year=2025/region=EU", "rowgroups.parquet"),
+        ("year=2025/region=EU%20West", "truncated.parquet"),
+    ]
+    for (index, (dir, file)) in layout.enumerated() {
+        let folder = root.appendingPathComponent(dir)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? fm.copyItem(
+            at: URL(fileURLWithPath: fixturesDir + "/" + file),
+            to: folder.appendingPathComponent("part-\(index).parquet")
+        )
+    }
+    try? Data("not parquet".utf8).write(to: root.appendingPathComponent("README.txt"))
+
+    guard let all = ParquetDataset.summarize(at: root, maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25) else {
+        assertTrue(false, "dataset summary should exist")
+        return
+    }
+    assertEqual(all.fileCount, 4, "dataset: parquet files")
+    assertEqual(all.validFileCount, 3, "dataset: valid files")
+    assertEqual(all.totalRows, 3 + 3 + 1000, "dataset: total rows")
+    assertTrue(!all.truncated, "dataset: not truncated")
+    assertEqual(all.columns.map(\.name), ["id", "score", "name", "flag", "day", "ts", "amount", "n", "label"], "dataset: column union in first-seen order")
+    assertEqual(all.partitionValuesByKey["year"] ?? [], ["2024", "2025"], "dataset: year partitions")
+    assertEqual(all.partitionValuesByKey["region"] ?? [], ["EU", "US", "EU West"], "dataset: region partitions (decoded)")
+
+    let capped = ParquetDataset.summarize(at: root, maxFiles: 2, recursive: true, maxPartitionValuesPerKey: 1)
+    assertTrue(capped?.truncated ?? false, "dataset: scan truncated at maxFiles")
+    assertEqual(capped?.validFileCount ?? -1, 2, "dataset: only maxFiles footers read")
+    assertEqual(capped?.partitionValuesByKey["region"]?.count ?? -1, 1, "dataset: partition values capped per key")
+
+    let flatOnly = ParquetDataset.summarize(at: root, maxFiles: 100, recursive: false, maxPartitionValuesPerKey: 25)
+    assertTrue(flatOnly == nil, "dataset: non-recursive scan of a partitioned root finds no files")
+
+    let empty = root.appendingPathComponent("empty")
+    try? fm.createDirectory(at: empty, withIntermediateDirectories: true)
+    assertTrue(ParquetDataset.summarize(at: empty, maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25) == nil, "dataset: no parquet files -> nil")
 }
 
 @main

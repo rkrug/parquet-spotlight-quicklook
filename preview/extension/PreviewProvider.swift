@@ -11,15 +11,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     typealias ColumnInfo = ParquetFooter.Column
     typealias Metadata = ParquetFooter.Summary
 
-    struct DatasetMetadata {
-        var fileCount: Int = 0
-        var validFileCount: Int = 0
-        var totalSize: UInt64 = 0
-        var totalRows: Int64 = 0
-        var columns: [ColumnInfo] = []
-        var partitionValuesByKey: [String: Set<String>] = [:]
-        var truncated = false
-    }
+    typealias DatasetMetadata = ParquetDataset.Summary
 
     private struct ScanLimits {
         static let maxPartitionValuesPerKey = 25
@@ -147,99 +139,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private func readDatasetMetadata(at folderURL: URL, settings: PreviewSettings) -> DatasetMetadata? {
-        let fm = Foundation.FileManager()
-        let keys: [Foundation.URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey]
-        var options: Foundation.FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
-        if !settings.recursiveScan {
-            options.insert(.skipsSubdirectoryDescendants)
-        }
-        guard let enumerator = fm.enumerator(
+        ParquetDataset.summarize(
             at: folderURL,
-            includingPropertiesForKeys: keys,
-            options: options
-        ) else {
-            return nil
-        }
-
-        var dataset = DatasetMetadata()
-        var typeMap: [String: Set<String>] = [:]
-        var firstPhysical: [String: String] = [:]
-        var columnOrder: [String] = []
-        let maxFilesToScan = settings.scanAllFiles ? Int.max : max(1, settings.maxScanFiles)
-
-        for case let fileURL as URL in enumerator {
-            let ext = fileURL.pathExtension.lowercased()
-            if ext != "parquet" {
-                continue
-            }
-
-            dataset.fileCount += 1
-            if dataset.fileCount > maxFilesToScan {
-                dataset.truncated = true
-                break
-            }
-
-            if let size = try? fileURL.resourceValues(forKeys: Set<Foundation.URLResourceKey>([.fileSizeKey])).fileSize, size > 0 {
-                dataset.totalSize = ParquetParserBounds.saturatingAdd(dataset.totalSize, UInt64(size))
-            }
-
-            parsePartitionSegments(from: fileURL, baseFolder: folderURL) { key, value in
-                var values = dataset.partitionValuesByKey[key] ?? Set<String>()
-                if values.count < ScanLimits.maxPartitionValuesPerKey {
-                    values.insert(value)
-                }
-                dataset.partitionValuesByKey[key] = values
-            }
-
-            let fileMetadata = readMetadata(at: fileURL)
-            if !fileMetadata.valid {
-                continue
-            }
-            dataset.validFileCount += 1
-            dataset.totalRows = ParquetParserBounds.saturatingAdd(dataset.totalRows, max(0, fileMetadata.rowCount))
-
-            for col in fileMetadata.columns {
-                if typeMap[col.name] == nil {
-                    columnOrder.append(col.name)
-                }
-                var types = typeMap[col.name] ?? Set<String>()
-                types.insert(col.logicalType)
-                typeMap[col.name] = types
-                if firstPhysical[col.name] == nil {
-                    firstPhysical[col.name] = col.physicalType
-                }
-            }
-        }
-
-        if dataset.fileCount == 0 {
-            return nil
-        }
-
-        dataset.columns = columnOrder.map { name in
-            let logicals = (typeMap[name] ?? []).sorted()
-            let logicalType = logicals.count <= 1
-                ? (logicals.first ?? "unknown")
-                : "mixed<\(logicals.joined(separator: " | "))>"
-            return ColumnInfo(
-                name: name,
-                logicalType: logicalType,
-                physicalType: firstPhysical[name] ?? "UNKNOWN"
-            )
-        }
-
-        return dataset
-    }
-
-    private func parsePartitionSegments(from fileURL: URL, baseFolder: URL, visit: (String, String) -> Void) {
-        let basePath = baseFolder.standardizedFileURL.path
-        let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
-        guard parentPath.hasPrefix(basePath) else {
-            return
-        }
-        let relative = String(parentPath.dropFirst(basePath.count))
-        for partition in ParquetFooter.partitions(inDirectoryPath: relative) {
-            visit(partition.key, partition.value)
-        }
+            maxFiles: settings.scanAllFiles ? Int.max : settings.maxScanFiles,
+            recursive: settings.recursiveScan,
+            maxPartitionValuesPerKey: ScanLimits.maxPartitionValuesPerKey
+        )
     }
 
     private func formatBytes(_ value: UInt64) -> String {

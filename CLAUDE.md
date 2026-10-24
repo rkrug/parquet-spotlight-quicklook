@@ -30,7 +30,7 @@ Three artifacts, all produced by `scripts/build.sh`:
 - **`Parquet Quick Look and Index.app`** — GUI manager (`preview/app/AppMain.swift`): install/repair/uninstall, settings, update checks, diagnostics. Embeds the importer payload and the appex.
 - **`ParquetQuickLook.appex`** — modern Quick Look preview extension (`preview/extension/PreviewProvider.swift`, plus `NSExtensionMain.m` entry). Renders schema tree, dataset-folder summaries, and Arrow schema JSON export.
 
-`Sources/ParquetCore/` holds pure logic (footer parser, parser bounds, update URL/tag trust checks, version comparison, error mapping, diagnostics redaction, status logic). `build.sh` compiles all of it into the app, but only `ParserBounds.swift` + `ParquetFooterParser.swift` into the extension and the importer; `test_core.sh` tests it, so keep it free of UI/AppKit dependencies.
+`Sources/ParquetCore/` holds pure logic (footer parser, dataset/folder summary, parser bounds, update URL/tag trust checks, version comparison, error mapping, diagnostics redaction, status logic). `build.sh` compiles all of it into the app, but only the parser files into the extension (`ParserBounds`, `ParquetFooterParser`, `ParquetDataset`) and the importer (`ParserBounds`, `ParquetFooterParser`); add new shared files to those lists in `build.sh` and `test_importer_summary.sh`; `test_core.sh` tests it, so keep it free of UI/AppKit dependencies.
 
 There is one Parquet footer parser (`ParquetFooterParser.swift`, Thrift compact protocol) for both Quick Look and Spotlight. Footers are untrusted input: keep reads bounded via `ParquetParserBounds`.
 
