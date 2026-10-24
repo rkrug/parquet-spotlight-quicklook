@@ -67,15 +67,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.5.0
+./scripts/release.sh v0.5.1
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.5.0.dmg`
-- creates `release/Parquet-Spotlight-0.5.0.zip`
-- creates `release/Parquet-Spotlight-0.5.0.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.5.1.dmg`
+- creates `release/Parquet-Spotlight-0.5.1.zip`
+- creates `release/Parquet-Spotlight-0.5.1.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
@@ -116,7 +116,7 @@ xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 2. Replace `Parquet Quick Look and Index.app` in `/Applications` with the one from the new DMG.
 3. Open the app once. On launch it replaces the Spotlight importer in `~/Library/Spotlight` when the bundled one is newer, re-registers it, and Spotlight re-indexes your Parquet files. The sidebar shows the new version.
 
-Apps older than the next release after 0.5.0 do not have this check: after updating to such a version, click `Re-Install` once. `Repair Registration` re-registers but keeps the installed importer.
+Versions before 0.5.1 do not have this check: when installing 0.5.0 or older, click `Re-Install` once. `Repair Registration` re-registers but keeps the installed importer.
 
 ## Rollback (Revert To A Previous Version)
 
