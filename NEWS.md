@@ -1,10 +1,19 @@
 # News
 
-## Unreleased
+## 0.4.3 - 2026-10-24
+
+### Enhancements
+
+- Added `Export Schema (JSON)` button in Quick Look (file and dataset previews).
+- Export now provides Arrow-friendly schema JSON with nested/flat views and reusable snippet stubs for R and Python.
+- Export JSON is now wrapped in a saved, versioned scheme envelope (`parquet-quicklook-arrow-schema-v1`) to allow adding additional export schemes later without breaking compatibility.
+- Quick Look previews now show the version in the heading, e.g. `Parquet Quick Look (v0.4.3)`.
+- `Show JSON` now toggles the export pane (`Hide JSON` closes it again).
 
 ### Security
 
 - Hardened Quick Look footer parsing so malformed metadata is rejected instead of exhausting the preview process.
+- Quick Look no longer reads footers larger than 16 MiB; such files are still shown as valid Parquet files, without columns (same limit as the Spotlight importer).
 - Dataset folder totals now saturate instead of wrapping.
 - Uninstall hands the app bundle path to the shell as an argument rather than interpolating it into a command string.
 - Spotlight column extraction skips oversize footers and caps the number of indexed columns. Files beyond those limits are still indexed as Parquet files.

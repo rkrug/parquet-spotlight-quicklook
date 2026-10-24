@@ -13,6 +13,8 @@ This project provides:
   - hierarchical schema tree (collapsible groups)
   - full parsed column list (no preview truncation)
   - Arrow-style logical scalar type labels where available
+  - `Export Schema (JSON)` button for Arrow-friendly schema reuse in R/Python
+  - versioned export-scheme envelope (`parquet-quicklook-arrow-schema-v1`) for forward-compatible additional schema formats
 - a small GUI manager app (`Parquet Quick Look and Index.app`) with:
   - `Re-Install`, `Repair Registration`, and `Uninstall` actions
   - `Copy Diagnostic Report` action for support/issue reports (anonymized)
@@ -65,15 +67,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.4.2
+./scripts/release.sh v0.4.3
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.4.2.dmg`
-- creates `release/Parquet-Spotlight-0.4.2.zip`
-- creates `release/Parquet-Spotlight-0.4.2.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.4.3.dmg`
+- creates `release/Parquet-Spotlight-0.4.3.zip`
+- creates `release/Parquet-Spotlight-0.4.3.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`

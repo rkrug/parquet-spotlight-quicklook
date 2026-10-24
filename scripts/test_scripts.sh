@@ -92,10 +92,10 @@ echo "==> [8/8] Release workflow hardening checks"
 if ! contains_fixed "persist-credentials: false" "$ROOT_DIR/.github/workflows/release.yml"; then
   fail "release checkout should not persist credentials"
 fi
-if ! contains_fixed "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" "$ROOT_DIR/.github/workflows/release.yml"; then
+if ! grep -Eq "actions/checkout@[0-9a-f]{40}( |$)" "$ROOT_DIR/.github/workflows/release.yml"; then
   fail "release checkout action should be pinned to a full commit SHA"
 fi
-if ! contains_fixed "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65" "$ROOT_DIR/.github/workflows/release.yml"; then
+if ! grep -Eq "softprops/action-gh-release@[0-9a-f]{40}( |$)" "$ROOT_DIR/.github/workflows/release.yml"; then
   fail "release upload action should be pinned to a full commit SHA"
 fi
 if ! contains_fixed "TAG: \${{ github.event.release.tag_name }}" "$ROOT_DIR/.github/workflows/release.yml"; then
