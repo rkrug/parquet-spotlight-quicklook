@@ -94,6 +94,45 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let columns: [ColumnInfo]
     }
 
+    private struct ExportField: Codable {
+        let name: String
+        let type: String
+        let children: [ExportField]
+    }
+
+    private struct ExportFlatField: Codable {
+        let path: String
+        let type: String
+        let physicalType: String
+    }
+
+    private enum SchemaExportFormat: String {
+        case arrowJSONV1 = "parquet-quicklook-arrow-schema-v1"
+    }
+
+    private struct SchemaExportScheme: Codable {
+        let id: String
+        let version: Int
+        let title: String
+        let description: String
+    }
+
+    private struct SchemaExportPayload: Codable {
+        let format: String
+        let sourcePath: String
+        let rowCount: Int64
+        let columnCount: Int
+        let fields: [ExportField]
+        let flatFields: [ExportFlatField]
+        let pythonSnippet: String
+        let rSnippet: String
+    }
+
+    private struct SchemaExportEnvelope: Codable {
+        let scheme: SchemaExportScheme
+        let payload: SchemaExportPayload
+    }
+
     private enum CompactType: UInt8 {
         case stop = 0x00
         case booleanTrue = 0x01
@@ -347,6 +386,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
 
             let footerOffset = Int64(fileSize) - 8 - Int64(footerLen)
             guard footerOffset >= 0 else { return out }
+            // Match the importer: oversize footers stay valid but are not read or parsed.
+            guard Int(footerLen) <= ParquetParserBounds.maxFooterLength else {
+                out.valid = true
+                return out
+            }
 
             try fh.seek(toOffset: UInt64(footerOffset))
             let footer = try fh.read(upToCount: Int(footerLen)) ?? Data()
@@ -363,9 +407,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private func readDatasetMetadata(at folderURL: URL, settings: PreviewSettings) -> DatasetMetadata? {
-        let fm = FileManager.default
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey]
-        var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
+        let fm = Foundation.FileManager()
+        let keys: [Foundation.URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey]
+        var options: Foundation.FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
         if !settings.recursiveScan {
             options.insert(.skipsSubdirectoryDescendants)
         }
@@ -380,6 +424,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var dataset = DatasetMetadata()
         var typeMap: [String: Set<String>] = [:]
         var firstPhysical: [String: String] = [:]
+        var columnOrder: [String] = []
         let maxFilesToScan = settings.scanAllFiles ? Int.max : max(1, settings.maxScanFiles)
 
         for case let fileURL as URL in enumerator {
@@ -394,7 +439,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 break
             }
 
-            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 {
+            if let size = try? fileURL.resourceValues(forKeys: Set<Foundation.URLResourceKey>([.fileSizeKey])).fileSize, size > 0 {
                 dataset.totalSize = ParquetParserBounds.saturatingAdd(dataset.totalSize, UInt64(size))
             }
 
@@ -414,6 +459,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             dataset.totalRows = ParquetParserBounds.saturatingAdd(dataset.totalRows, max(0, fileMetadata.rowCount))
 
             for col in fileMetadata.columns {
+                if typeMap[col.name] == nil {
+                    columnOrder.append(col.name)
+                }
                 var types = typeMap[col.name] ?? Set<String>()
                 types.insert(col.logicalType)
                 typeMap[col.name] = types
@@ -427,8 +475,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return nil
         }
 
-        let sortedColumns = typeMap.keys.sorted()
-        dataset.columns = sortedColumns.map { name in
+        dataset.columns = columnOrder.map { name in
             let logicals = (typeMap[name] ?? []).sorted()
             let logicalType = logicals.count <= 1
                 ? (logicals.first ?? "unknown")
@@ -1089,8 +1136,152 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         return out
     }
 
+    private func schemaExportScheme(for format: SchemaExportFormat) -> SchemaExportScheme {
+        switch format {
+        case .arrowJSONV1:
+            return SchemaExportScheme(
+                id: format.rawValue,
+                version: 1,
+                title: "Parquet Quick Look Arrow-Friendly Schema JSON",
+                description: "Nested and flat schema export with Arrow-friendly logical types plus R/Python snippet stubs."
+            )
+        }
+    }
+
+    private func buildSchemaExportPayload(format: SchemaExportFormat, path: String, columns: [ColumnInfo], rowCount: Int64) -> SchemaExportPayload {
+        let fields = buildExportFields(columns: columns)
+        let flat = columns.map {
+            ExportFlatField(path: $0.name, type: $0.logicalType, physicalType: $0.physicalType)
+        }
+        return SchemaExportPayload(
+            format: format.rawValue,
+            sourcePath: path,
+            rowCount: rowCount,
+            columnCount: columns.count,
+            fields: fields,
+            flatFields: flat,
+            pythonSnippet: pythonSchemaSnippet(columns: columns),
+            rSnippet: rSchemaSnippet(columns: columns)
+        )
+    }
+
+    private func schemaExportBase64(path: String, columns: [ColumnInfo], rowCount: Int64, format: SchemaExportFormat = .arrowJSONV1) -> String {
+        let envelope = SchemaExportEnvelope(
+            scheme: schemaExportScheme(for: format),
+            payload: buildSchemaExportPayload(format: format, path: path, columns: columns, rowCount: rowCount)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = (try? encoder.encode(envelope)) ?? Data("{}".utf8)
+        return data.base64EncodedString()
+    }
+
+    private func buildExportFields(columns: [ColumnInfo]) -> [ExportField] {
+        let root = ColumnTreeNode()
+        for col in columns {
+            let parts = col.name.split(separator: ".").map(String.init)
+            guard !parts.isEmpty else { continue }
+            var node = root
+            for (idx, p) in parts.enumerated() {
+                node = node.child(named: p)
+                if idx == parts.count - 1 {
+                    node.type = col.logicalType
+                } else if node.groupType == nil {
+                    node.groupType = "struct"
+                }
+            }
+        }
+
+        func walk(node: ColumnTreeNode) -> [ExportField] {
+            var out: [ExportField] = []
+            for name in node.order {
+                guard let child = node.children[name] else { continue }
+                let children = walk(node: child)
+                let t = children.isEmpty ? (child.type ?? "unknown") : (child.groupType ?? "struct")
+                out.append(ExportField(name: name, type: t, children: children))
+            }
+            return out
+        }
+
+        return walk(node: root)
+    }
+
+    private func pythonTypeExpr(_ logical: String) -> String {
+        let t = logical.lowercased()
+        if t.hasPrefix("string") { return "pa.string()" }
+        if t == "bool" || t == "boolean" { return "pa.bool_()" }
+        if t == "int8" { return "pa.int8()" }
+        if t == "int16" { return "pa.int16()" }
+        if t == "int32" { return "pa.int32()" }
+        if t == "int64" { return "pa.int64()" }
+        if t == "uint8" { return "pa.uint8()" }
+        if t == "uint16" { return "pa.uint16()" }
+        if t == "uint32" { return "pa.uint32()" }
+        if t == "uint64" { return "pa.uint64()" }
+        if t == "float" { return "pa.float32()" }
+        if t == "double" { return "pa.float64()" }
+        if t == "date32[day]" { return "pa.date32()" }
+        if t == "timestamp[ms]" { return "pa.timestamp('ms')" }
+        if t == "timestamp[us]" { return "pa.timestamp('us')" }
+        if t == "timestamp[ns]" { return "pa.timestamp('ns')" }
+        if t == "time32[ms]" { return "pa.time32('ms')" }
+        if t == "time64[us]" { return "pa.time64('us')" }
+        if t == "time64[ns]" { return "pa.time64('ns')" }
+        return "pa.string()  # fallback from \(logical)"
+    }
+
+    private func rTypeExpr(_ logical: String) -> String {
+        let t = logical.lowercased()
+        if t.hasPrefix("string") { return "arrow::utf8()" }
+        if t == "bool" || t == "boolean" { return "arrow::boolean()" }
+        if t == "int8" { return "arrow::int8()" }
+        if t == "int16" { return "arrow::int16()" }
+        if t == "int32" { return "arrow::int32()" }
+        if t == "int64" { return "arrow::int64()" }
+        if t == "uint8" { return "arrow::uint8()" }
+        if t == "uint16" { return "arrow::uint16()" }
+        if t == "uint32" { return "arrow::uint32()" }
+        if t == "uint64" { return "arrow::uint64()" }
+        if t == "float" { return "arrow::float32()" }
+        if t == "double" { return "arrow::float64()" }
+        if t == "date32[day]" { return "arrow::date32()" }
+        if t == "timestamp[ms]" { return "arrow::timestamp(\"ms\")" }
+        if t == "timestamp[us]" { return "arrow::timestamp(\"us\")" }
+        if t == "timestamp[ns]" { return "arrow::timestamp(\"ns\")" }
+        if t == "time32[ms]" { return "arrow::time32(\"ms\")" }
+        if t == "time64[us]" { return "arrow::time64(\"us\")" }
+        if t == "time64[ns]" { return "arrow::time64(\"ns\")" }
+        return "arrow::utf8()  # fallback from \(logical)"
+    }
+
+    private func pythonSchemaSnippet(columns: [ColumnInfo]) -> String {
+        var lines: [String] = [
+            "import pyarrow as pa",
+            "",
+            "schema = pa.schema(["
+        ]
+        for col in columns {
+            lines.append("    pa.field(\"\(col.name)\", \(pythonTypeExpr(col.logicalType))),")
+        }
+        lines.append("])")
+        return lines.joined(separator: "\n")
+    }
+
+    private func rSchemaSnippet(columns: [ColumnInfo]) -> String {
+        var lines: [String] = [
+            "schema <- arrow::schema(",
+        ]
+        for (idx, col) in columns.enumerated() {
+            let comma = idx == columns.count - 1 ? "" : ","
+            lines.append("  arrow::field(\"\(col.name)\", \(rTypeExpr(col.logicalType)))\(comma)")
+        }
+        lines.append(")")
+        return lines.joined(separator: "\n")
+    }
+
     private func renderHTML(path: String, metadata: Metadata) -> String {
         let settings = loadSettings()
+        let exportSchemaB64 = schemaExportBase64(path: path, columns: metadata.columns, rowCount: metadata.rowCount)
         let showCount = settings.showAllColumns
             ? metadata.columns.count
             : min(metadata.columns.count, max(1, settings.maxColumns))
@@ -1139,8 +1330,43 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .toggle{width:16px;height:16px;border:none;border-radius:3px;background:transparent;color:#475569;font-size:13px;line-height:14px;cursor:pointer;margin-right:6px;padding:0;vertical-align:middle}
             .toggle:hover{background:#e5e7eb;color:#111827}
             .spacer{display:inline-block;width:18px;margin-right:6px}
+            .toolbar{margin:12px 0 10px}
+            .export-pane{display:none;margin:10px 0;border:1px solid #d1d5db;border-radius:8px;padding:10px;background:#f8fafc}
+            .export-pane textarea{width:100%;height:220px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace;font-size:11px;border:1px solid #cbd5e1;border-radius:6px;padding:8px;resize:vertical}
+            .export-actions{margin-top:8px;display:flex;gap:8px}
+            .sub-btn{border:1px solid #cbd5e1;background:#fff;color:#111827;border-radius:6px;padding:5px 8px;font-size:11px;cursor:pointer}
+            .sub-btn:hover{background:#f3f4f6}
           </style>
           <script>
+            function schemaBytes(){
+              const b64 = "\(exportSchemaB64)";
+              const bytes = atob(b64);
+              const arr = new Uint8Array(bytes.length);
+              for(let i=0;i<bytes.length;i++){ arr[i] = bytes.charCodeAt(i); }
+              return arr;
+            }
+            function schemaJson(){
+              try {
+                const arr = schemaBytes();
+                return new TextDecoder("utf-8").decode(arr);
+              } catch (e) {
+                return "";
+              }
+            }
+            function showSchemaPane(){
+              const pane = document.getElementById("export-pane");
+              const area = document.getElementById("export-json");
+              if(!pane || !area){ return; }
+              area.value = schemaJson();
+              pane.style.display = "block";
+            }
+            function copySchema(){
+              const area = document.getElementById("export-json");
+              if(!area){ return; }
+              area.focus();
+              area.select();
+              document.execCommand("copy");
+            }
             function childRows(id){
               return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
             }
@@ -1189,6 +1415,16 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         <body>
           <h1>Parquet Quick Look</h1>
           <div class=\"muted\">\(esc(path))</div>
+          <div class=\"toolbar\">
+            <button class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+          </div>
+          <div id=\"export-pane\" class=\"export-pane\">
+            <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
+            <textarea id=\"export-json\" spellcheck=\"false\"></textarea>
+            <div class=\"export-actions\">
+              <button class=\"sub-btn\" onclick=\"copySchema();return false;\">Copy JSON</button>
+            </div>
+          </div>
 
           <div class=\"meta\">
             <div class=\"card\"><div class=\"label\">Valid</div><div class=\"val\">\(metadata.valid ? "Yes" : "No")</div></div>
@@ -1208,6 +1444,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private func renderDatasetHTML(path: String, dataset: DatasetMetadata, settings: PreviewSettings) -> String {
+        let exportSchemaB64 = schemaExportBase64(path: path, columns: dataset.columns, rowCount: dataset.totalRows)
         let showCount = settings.showAllColumns
             ? dataset.columns.count
             : min(dataset.columns.count, max(1, settings.maxColumns))
@@ -1273,8 +1510,43 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .toggle{width:16px;height:16px;border:none;border-radius:3px;background:transparent;color:#475569;font-size:13px;line-height:14px;cursor:pointer;margin-right:6px;padding:0;vertical-align:middle}
             .toggle:hover{background:#e5e7eb;color:#111827}
             .spacer{display:inline-block;width:18px;margin-right:6px}
+            .toolbar{margin:12px 0 10px}
+            .export-pane{display:none;margin:10px 0;border:1px solid #d1d5db;border-radius:8px;padding:10px;background:#f8fafc}
+            .export-pane textarea{width:100%;height:220px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace;font-size:11px;border:1px solid #cbd5e1;border-radius:6px;padding:8px;resize:vertical}
+            .export-actions{margin-top:8px;display:flex;gap:8px}
+            .sub-btn{border:1px solid #cbd5e1;background:#fff;color:#111827;border-radius:6px;padding:5px 8px;font-size:11px;cursor:pointer}
+            .sub-btn:hover{background:#f3f4f6}
           </style>
           <script>
+            function schemaBytes(){
+              const b64 = "\(exportSchemaB64)";
+              const bytes = atob(b64);
+              const arr = new Uint8Array(bytes.length);
+              for(let i=0;i<bytes.length;i++){ arr[i] = bytes.charCodeAt(i); }
+              return arr;
+            }
+            function schemaJson(){
+              try {
+                const arr = schemaBytes();
+                return new TextDecoder("utf-8").decode(arr);
+              } catch (e) {
+                return "";
+              }
+            }
+            function showSchemaPane(){
+              const pane = document.getElementById("export-pane");
+              const area = document.getElementById("export-json");
+              if(!pane || !area){ return; }
+              area.value = schemaJson();
+              pane.style.display = "block";
+            }
+            function copySchema(){
+              const area = document.getElementById("export-json");
+              if(!area){ return; }
+              area.focus();
+              area.select();
+              document.execCommand("copy");
+            }
             function childRows(id){
               return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
             }
@@ -1320,6 +1592,16 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         <body>
           <h1>Parquet Dataset Quick Look</h1>
           <div class=\"muted\">\(esc(path))</div>
+          <div class=\"toolbar\">
+            <button class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+          </div>
+          <div id=\"export-pane\" class=\"export-pane\">
+            <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
+            <textarea id=\"export-json\" spellcheck=\"false\"></textarea>
+            <div class=\"export-actions\">
+              <button class=\"sub-btn\" onclick=\"copySchema();return false;\">Copy JSON</button>
+            </div>
+          </div>
 
           <div class=\"meta\">
             <div class=\"card\"><div class=\"label\">Parquet Files</div><div class=\"val\">\(esc(formatInt(Int64(dataset.fileCount))))</div></div>

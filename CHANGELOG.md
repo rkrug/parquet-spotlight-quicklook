@@ -2,17 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.4.3 - 2026-03-20
 
+- Added `Export Schema (JSON)` button in Quick Look previews (file and dataset views).
+- Added Arrow-friendly schema export payload:
+  - nested schema tree
+  - flat field map with logical/physical types
+  - reusable R and Python Arrow snippet stubs.
+- Added a versioned schema-export envelope (`parquet-quicklook-arrow-schema-v1`) so additional export schemes can be added later in a compatible way.
 - Hardened Quick Look footer parsing against malformed metadata:
   - bound nesting depth and declared container sizes by remaining input
   - overflow-checked field ids, binary lengths, and row-group sums
   - cap total skip work so parse cost stays linear in the footer size
+  - skip reading footers larger than 16 MiB (file is still shown as valid Parquet, without columns), matching the importer
 - Use saturating sums for Quick Look dataset size and row totals.
 - Pass the app bundle path to the uninstall shell as a positional argument.
 - Bound Spotlight importer footer reads (16 MiB) and column extraction (4096).
 - Harden the release workflow: pin actions to full commit SHAs, pass the tag via the environment, and do not persist checkout credentials.
-- Added sanity-bounds tests for importer footer limits, parser count/total helpers, uninstall argument construction, and release-workflow pinning.
+- Added sanity-bounds tests for importer footer limits, parser count/total helpers, uninstall argument construction, and release-workflow pinning (any full commit SHA is accepted).
+- Bumped importer, app, and extension versions to `0.4.3`.
 
 ## 0.4.2 - 2026-03-12
 
