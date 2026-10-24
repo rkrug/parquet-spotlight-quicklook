@@ -108,6 +108,14 @@ public struct ParquetUpdateValidator {
         return normalizedPath(url.path) == expectedPath
     }
 
+    // Release asset download links (GitHub then redirects to its CDN).
+    public func isTrustedReleaseAssetURL(_ url: URL, expectedTag: String, expectedName: String) -> Bool {
+        guard url.scheme?.lowercased() == "https" else { return false }
+        guard url.host?.lowercased() == expectedGitHubHost else { return false }
+        let expectedPath = "\(expectedRepoPath)/releases/download/\(expectedTag)/\(expectedName)"
+        return normalizedPath(url.path) == expectedPath
+    }
+
     public func normalizedPath(_ path: String) -> String {
         var normalized = path
         while normalized.count > 1 && normalized.hasSuffix("/") {

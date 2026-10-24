@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 private func assertTrue(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -136,6 +137,8 @@ func runCoreTests() {
     assertTrue(replace("garbage", "x", "0.5.0", "10"), "unparseable installed version should be replaced")
     assertTrue(!replace("0.4.3", "9", nil, nil), "unreadable bundled version should not replace")
 
+    runSelfUpdateTests()
+
     // Self-removal must pass the bundle path as a positional parameter, never inside the script.
     let pathWithShellSyntax = "/Users/x/Apps/$(echo a) `echo b` \"q\" \\x/Parquet Quick Look and Index.app"
     let args = ParquetSelfRemoval.shellArguments(forRemovingBundleAt: pathWithShellSyntax)
@@ -205,6 +208,73 @@ func runFooterFixtureTests(fixturesDir: String) {
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
     assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
+private func runSelfUpdateTests() {
+    // Signatures: only the matching key over the exact bytes verifies.
+    let key = Curve25519.Signing.PrivateKey()
+    let publicKey = key.publicKey.rawRepresentation.base64EncodedString()
+    let payload = Data("release zip bytes".utf8)
+    let signature = (try? key.signature(for: payload))?.base64EncodedString() ?? ""
+    assertTrue(ParquetSelfUpdate.isValidSignature(signature, for: payload, publicKeyBase64: publicKey), "valid signature should verify")
+    assertTrue(ParquetSelfUpdate.isValidSignature(signature + "\n", for: payload, publicKeyBase64: publicKey + "\n"), "surrounding whitespace is ignored")
+    assertTrue(!ParquetSelfUpdate.isValidSignature(signature, for: Data("tampered".utf8), publicKeyBase64: publicKey), "tampered data must not verify")
+    let otherKey = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString()
+    assertTrue(!ParquetSelfUpdate.isValidSignature(signature, for: payload, publicKeyBase64: otherKey), "other key must not verify")
+    assertTrue(!ParquetSelfUpdate.isValidSignature("not base64!", for: payload, publicKeyBase64: publicKey), "garbage signature must not verify")
+    assertTrue(!ParquetSelfUpdate.isValidSignature(signature, for: payload, publicKeyBase64: ""), "missing key must not verify")
+    assertEqual(ParquetSelfUpdate.signatureAssetName(version: "0.5.2"), "Parquet-Spotlight-0.5.2.zip.sig", "signature asset name")
+
+    // Asset URLs must point at this repository's release download path.
+    let validator = ParquetUpdateValidator()
+    let good = URL(string: "https://github.com/rkrug/parquet-spotlight-quicklook/releases/download/v0.5.2/Parquet-Spotlight-0.5.2.zip")!
+    assertTrue(validator.isTrustedReleaseAssetURL(good, expectedTag: "v0.5.2", expectedName: "Parquet-Spotlight-0.5.2.zip"), "release asset URL should be trusted")
+    let otherRepo = URL(string: "https://github.com/evil/parquet-spotlight-quicklook/releases/download/v0.5.2/Parquet-Spotlight-0.5.2.zip")!
+    assertTrue(!validator.isTrustedReleaseAssetURL(otherRepo, expectedTag: "v0.5.2", expectedName: "Parquet-Spotlight-0.5.2.zip"), "other repository must not be trusted")
+    let plainHTTP = URL(string: "http://github.com/rkrug/parquet-spotlight-quicklook/releases/download/v0.5.2/Parquet-Spotlight-0.5.2.zip")!
+    assertTrue(!validator.isTrustedReleaseAssetURL(plainHTTP, expectedTag: "v0.5.2", expectedName: "Parquet-Spotlight-0.5.2.zip"), "http must not be trusted")
+    assertTrue(!validator.isTrustedReleaseAssetURL(good, expectedTag: "v0.5.3", expectedName: "Parquet-Spotlight-0.5.2.zip"), "tag mismatch must not be trusted")
+
+    // Swap helper: runs the real script on temporary folders, waiting on an already-finished process.
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("parquet-swap-test-\(getpid())")
+    defer { try? fm.removeItem(at: root) }
+    let installed = root.appendingPathComponent("Apps/My App $(touch x).app")
+    let fresh = root.appendingPathComponent("Download/My App $(touch x).app")
+    let trash = root.appendingPathComponent("Trash/My App (old).app")
+    for dir in [installed, fresh, trash.deletingLastPathComponent()] {
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    try? Data("old".utf8).write(to: installed.appendingPathComponent("version"))
+    try? Data("new".utf8).write(to: fresh.appendingPathComponent("version"))
+
+    let finished = Process()
+    finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try? finished.run()
+    finished.waitUntilExit()
+
+    let swap = Process()
+    swap.executableURL = URL(fileURLWithPath: ParquetSelfUpdate.shellPath)
+    swap.arguments = ParquetSelfUpdate.shellArguments(
+        waitingForPID: finished.processIdentifier,
+        installedAppPath: installed.path,
+        newAppPath: fresh.path,
+        trashPath: trash.path,
+        relaunch: false
+    )
+    swap.currentDirectoryURL = root
+    try? swap.run()
+    swap.waitUntilExit()
+
+    var swapped = false
+    for _ in 0..<50 where !swapped {
+        swapped = (try? String(contentsOf: installed.appendingPathComponent("version"), encoding: .utf8)) == "new"
+        if !swapped { usleep(100_000) }
+    }
+    assertTrue(swapped, "swap: new app should be in place")
+    assertEqual(try? String(contentsOf: trash.appendingPathComponent("version"), encoding: .utf8), "old", "swap: old app should be in the trash path")
+    assertTrue(!fm.fileExists(atPath: fresh.path), "swap: downloaded copy should have been moved")
+    assertTrue(!fm.fileExists(atPath: root.appendingPathComponent("x").path), "swap: paths must not be run as shell code")
 }
 
 // Builds a small hive-partitioned dataset from the fixtures in a temporary folder.

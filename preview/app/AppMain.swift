@@ -106,6 +106,20 @@ private final class AppModel: ObservableObject {
     private struct GitHubLatestRelease: Decodable {
         let tag_name: String
         let html_url: String
+        let assets: [Asset]?
+
+        struct Asset: Decodable {
+            let name: String
+            let browser_download_url: String
+        }
+    }
+
+    // Signed ZIP + signature for an in-app update, both on this repository's release.
+    private struct UpdatePackage {
+        let tag: String
+        let version: String
+        let zipURL: URL
+        let signatureURL: URL
     }
 
     private let fm = FileManager.default
@@ -359,8 +373,14 @@ private final class AppModel: ObservableObject {
                     }
                     return
                 }
+                let package = self.updatePackage(for: release, version: latestVersion.normalized)
                 DispatchQueue.main.async {
-                    self.showUpdateAvailableDialog(version: "v\(latestVersion.normalized)", skippedVersion: latestVersion.normalized, url: releaseURL)
+                    self.showUpdateAvailableDialog(
+                        version: "v\(latestVersion.normalized)",
+                        skippedVersion: latestVersion.normalized,
+                        url: releaseURL,
+                        package: package
+                    )
                 }
             } else if manual {
                 DispatchQueue.main.async {
@@ -370,24 +390,173 @@ private final class AppModel: ObservableObject {
         }.resume()
     }
 
-    private func showUpdateAvailableDialog(version: String, skippedVersion: String, url: URL) {
+    private func showUpdateAvailableDialog(version: String, skippedVersion: String, url: URL, package: UpdatePackage?) {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.messageText = "New Version Available"
         alert.informativeText = "\(appDisplayName) (\(currentVersion())) can be updated to \(version)."
+        if package != nil {
+            alert.informativeText += " Install Update downloads it, checks its signature, and restarts the app."
+            alert.addButton(withTitle: "Install Update")
+        }
         alert.addButton(withTitle: "Open Release Page")
         alert.addButton(withTitle: "Skip this version")
         alert.addButton(withTitle: "Later")
-        let response = alert.runModal()
+        var response = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if let package {
+            if response == 0 {
+                installUpdate(package, releasePage: url)
+                return
+            }
+            response -= 1
+        }
         switch response {
-        case .alertFirstButtonReturn:
+        case 0:
             NSWorkspace.shared.open(url)
-        case .alertSecondButtonReturn:
+        case 1:
             let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
             defaults.set(skippedVersion, forKey: SettingsKeys.skippedUpdateVersion)
         default:
             break
+        }
+    }
+
+    // nil when the release has no signed ZIP, the app has no update key, or the app's folder is
+    // not writable: the dialog then only offers the release page.
+    private func updatePackage(for release: GitHubLatestRelease, version: String) -> UpdatePackage? {
+        guard
+            Bundle.main.object(forInfoDictionaryKey: ParquetSelfUpdate.publicKeyInfoKey) is String,
+            fm.isWritableFile(atPath: Bundle.main.bundleURL.deletingLastPathComponent().path)
+        else { return nil }
+        func assetURL(_ name: String) -> URL? {
+            guard
+                let raw = release.assets?.first(where: { $0.name == name })?.browser_download_url,
+                let url = URL(string: raw),
+                updateValidator.isTrustedReleaseAssetURL(url, expectedTag: release.tag_name, expectedName: name)
+            else { return nil }
+            return url
+        }
+        guard
+            let zipURL = assetURL(ParquetSelfUpdate.zipAssetName(version: version)),
+            let signatureURL = assetURL(ParquetSelfUpdate.signatureAssetName(version: version))
+        else { return nil }
+        return UpdatePackage(tag: release.tag_name, version: version, zipURL: zipURL, signatureURL: signatureURL)
+    }
+
+    private enum UpdateInstallError: LocalizedError {
+        case failed(String)
+        var errorDescription: String? {
+            switch self {
+            case .failed(let message): return message
+            }
+        }
+    }
+
+    private func installUpdate(_ package: UpdatePackage, releasePage: URL) {
+        setStatus("Downloading update \(package.version)…")
+        Task {
+            do {
+                let newApp = try await downloadAndVerifyUpdate(package)
+                await MainActor.run { self.swapInUpdate(newApp, version: package.version) }
+            } catch {
+                await MainActor.run {
+                    self.setStatus("Update failed: \(error.localizedDescription)", error: true)
+                    self.showUpdateInstallFailedDialog(error.localizedDescription, releasePage: releasePage)
+                }
+            }
+        }
+    }
+
+    // Downloads next to the installed app (same volume, so the swap is a rename), verifies the
+    // Ed25519 signature before unpacking, and checks the unpacked bundle. Returns the new app.
+    private func downloadAndVerifyUpdate(_ package: UpdatePackage) async throws -> URL {
+        guard let publicKey = Bundle.main.object(forInfoDictionaryKey: ParquetSelfUpdate.publicKeyInfoKey) as? String else {
+            throw UpdateInstallError.failed("This build has no update key.")
+        }
+        let workDir = try fm.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: Bundle.main.bundleURL,
+            create: true
+        )
+
+        func fetch(_ url: URL) async throws -> Data {
+            var request = URLRequest(url: url)
+            request.setValue("ParquetQuickLookAndIndex", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                throw UpdateInstallError.failed("Download failed: \(url.lastPathComponent).")
+            }
+            return data
+        }
+        let zipData = try await fetch(package.zipURL)
+        let signature = String(decoding: try await fetch(package.signatureURL), as: UTF8.self)
+        guard ParquetSelfUpdate.isValidSignature(signature, for: zipData, publicKeyBase64: publicKey) else {
+            throw UpdateInstallError.failed("The update's signature is not valid; nothing was installed.")
+        }
+
+        let zipPath = workDir.appendingPathComponent(ParquetSelfUpdate.zipAssetName(version: package.version))
+        try zipData.write(to: zipPath)
+        guard run("/usr/bin/ditto", ["-x", "-k", zipPath.path, workDir.path]) == 0 else {
+            throw UpdateInstallError.failed("Could not unpack the update.")
+        }
+        let newApp = workDir
+            .appendingPathComponent("Parquet-Spotlight-\(package.version)")
+            .appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
+        let info = Bundle(url: newApp)?.infoDictionary
+        guard
+            info?["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier,
+            info?["CFBundleShortVersionString"] as? String == package.version
+        else {
+            throw UpdateInstallError.failed("The downloaded app is not \(appDisplayName) \(package.version).")
+        }
+        guard run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp.path]) == 0 else {
+            throw UpdateInstallError.failed("The downloaded app failed code signature verification.")
+        }
+        run("/usr/bin/xattr", ["-cr", newApp.path])
+        return newApp
+    }
+
+    // The running app cannot replace itself: a helper waits for it to quit, moves it aside into
+    // the update's temporary folder (same volume; the system clears it), moves the new app into
+    // place and relaunches it. The new app then updates the Spotlight importer on launch
+    // (autoInstallOrUpdateImporter).
+    private func swapInUpdate(_ newApp: URL, version: String) {
+        let installed = Bundle.main.bundleURL
+        let workDir = newApp.deletingLastPathComponent().deletingLastPathComponent()
+        let trash = workDir.appendingPathComponent("previous-\(currentVersion()).app")
+        let status = run(
+            ParquetSelfUpdate.shellPath,
+            ParquetSelfUpdate.shellArguments(
+                waitingForPID: ProcessInfo.processInfo.processIdentifier,
+                installedAppPath: installed.path,
+                newAppPath: newApp.path,
+                trashPath: trash.path,
+                relaunch: true
+            )
+        )
+        guard status == 0 else {
+            setStatus("Update failed: could not start the installer helper.", error: true)
+            return
+        }
+        setStatus("Installing \(version); the app restarts.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func showUpdateInstallFailedDialog(_ message: String, releasePage: URL) {
+        appendError(message)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.icon = NSApp.applicationIconImage
+        alert.messageText = "Update Not Installed"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Open Release Page")
+        alert.addButton(withTitle: "OK")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(releasePage)
         }
     }
 

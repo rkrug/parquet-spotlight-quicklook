@@ -39,3 +39,5 @@ There is one Parquet footer parser (`ParquetFooterParser.swift`, Thrift compact 
 ## Versioning/release
 
 Version strings live in `plist/Info.plist`, `preview/app/Info.plist`, `preview/extension/Info.plist`, and are updated alongside `CHANGELOG.md` and `NEWS.md`. Tagged releases are built by `.github/workflows/release.yml`. Releases are ad-hoc signed only (not notarized). Branch workflow: development on `dev`, release from `main`.
+
+In-app updates (`ParquetSelfUpdate` in `Sources/ParquetCore/SelfUpdate.swift`, flow in `AppMain.swift`) trust only an Ed25519 signature: the release workflow signs the ZIP with the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` via `scripts/sign_update.swift`, and the app checks it against `ParquetUpdatePublicKey` in `preview/app/Info.plist`. Rotating the key means shipping a release with the new public key first, signed with the old one. The private key never goes into the repository.
