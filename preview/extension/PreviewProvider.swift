@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 
 @objc(PreviewProvider)
 final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
+    private static let versionSuffix: String =
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String).map { " (v\($0))" } ?? ""
+
     struct ColumnInfo {
         let name: String
         let logicalType: String
@@ -1356,9 +1359,16 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             function showSchemaPane(){
               const pane = document.getElementById("export-pane");
               const area = document.getElementById("export-json");
+              const btn = document.getElementById("json-btn");
               if(!pane || !area){ return; }
+              if(pane.style.display === "block"){
+                pane.style.display = "none";
+                if(btn){ btn.textContent = "Show JSON"; }
+                return;
+              }
               area.value = schemaJson();
               pane.style.display = "block";
+              if(btn){ btn.textContent = "Hide JSON"; }
             }
             function copySchema(){
               const area = document.getElementById("export-json");
@@ -1413,10 +1423,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           </script>
         </head>
         <body>
-          <h1>Parquet Quick Look</h1>
+          <h1>Parquet Quick Look\(esc(PreviewProvider.versionSuffix))</h1>
           <div class=\"muted\">\(esc(path))</div>
           <div class=\"toolbar\">
-            <button class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+            <button id=\"json-btn\" class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
           </div>
           <div id=\"export-pane\" class=\"export-pane\">
             <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
@@ -1536,9 +1546,16 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             function showSchemaPane(){
               const pane = document.getElementById("export-pane");
               const area = document.getElementById("export-json");
+              const btn = document.getElementById("json-btn");
               if(!pane || !area){ return; }
+              if(pane.style.display === "block"){
+                pane.style.display = "none";
+                if(btn){ btn.textContent = "Show JSON"; }
+                return;
+              }
               area.value = schemaJson();
               pane.style.display = "block";
+              if(btn){ btn.textContent = "Hide JSON"; }
             }
             function copySchema(){
               const area = document.getElementById("export-json");
@@ -1590,10 +1607,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           </script>
         </head>
         <body>
-          <h1>Parquet Dataset Quick Look</h1>
+          <h1>Parquet Dataset Quick Look\(esc(PreviewProvider.versionSuffix))</h1>
           <div class=\"muted\">\(esc(path))</div>
           <div class=\"toolbar\">
-            <button class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+            <button id=\"json-btn\" class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
           </div>
           <div id=\"export-pane\" class=\"export-pane\">
             <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
