@@ -1,5 +1,11 @@
 # News
 
+## Unreleased
+
+### Enhancements
+
+- Updates can be installed from within the app (`Install Update`), with a signature check before anything is replaced.
+
 ## 0.5.1 - 2026-10-24
 
 ### Changes

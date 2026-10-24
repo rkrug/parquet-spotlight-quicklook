@@ -26,5 +26,7 @@
   <string>13.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>ParquetUpdatePublicKey</key>
+  <string>X9k4PZCtSZ/JnBNSi3EVo5w41K/qwZVyl75pBijimFE=</string>
 </dict>
 </plist>

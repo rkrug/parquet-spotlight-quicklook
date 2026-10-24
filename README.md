@@ -112,6 +112,14 @@ xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 
 ## Update
 
+### In-app (next release after 0.5.1 onwards)
+
+When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `Install Update`. The app downloads the release ZIP, verifies its Ed25519 signature against the key built into the app, checks the unpacked app (bundle ID, version, code signature), then quits, swaps itself in place, and relaunches; the new app updates the Spotlight importer on launch. If the release has no signature, the app's folder is not writable, or any check fails, nothing is installed and the release page is offered instead.
+
+Signing for maintainers: `swift scripts/sign_update.swift keygen` creates a key pair once. The private key goes into the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` (the release workflow then uploads `Parquet-Spotlight-<version>.zip.sig`), the public key into `ParquetUpdatePublicKey` in `preview/app/Info.plist`.
+
+### Manually
+
 1. Quit `Parquet Quick Look and Index` if it is running.
 2. Replace `Parquet Quick Look and Index.app` in `/Applications` with the one from the new DMG.
 3. Open the app once. On launch it replaces the Spotlight importer in `~/Library/Spotlight` when the bundled one is newer, re-registers it, and Spotlight re-indexes your Parquet files. The sidebar shows the new version.

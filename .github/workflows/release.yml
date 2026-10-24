@@ -65,6 +65,21 @@ jobs:
             echo "SHA_PATH=$SHA_PATH"
           } >> "$GITHUB_ENV"
 
+      # Ed25519 signature over the ZIP for the app's in-app updater (scripts/sign_update.swift).
+      # Without the secret the release still builds, but the app only offers the release page.
+      - name: Sign ZIP for in-app updates
+        shell: bash
+        env:
+          PARQUET_UPDATE_SIGNING_KEY: ${{ secrets.PARQUET_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PARQUET_UPDATE_SIGNING_KEY" ]]; then
+            echo "::warning::PARQUET_UPDATE_SIGNING_KEY is not set; publishing without an update signature."
+            exit 0
+          fi
+          swift scripts/sign_update.swift sign "$ZIP_PATH"
+          echo "SIG_PATH=$ZIP_PATH.sig" >> "$GITHUB_ENV"
+
       - name: Upload release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -73,4 +88,12 @@ jobs:
             ${{ env.DMG_PATH }}
             ${{ env.ZIP_PATH }}
             ${{ env.SHA_PATH }}
+          fail_on_unmatched_files: true
+
+      - name: Upload update signature
+        if: env.SIG_PATH != ''
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ env.SIG_PATH }}
           fail_on_unmatched_files: true
