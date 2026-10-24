@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.5.0 - 2026-10-24
 
+- Bumped importer, app, and extension versions to `0.5.0`.
 - Moved the folder/dataset summary (file and row totals, column union, hive partition values) from the Quick Look extension to `Sources/ParquetCore/ParquetDataset.swift`, with tests on a generated hive-partitioned dataset.
 - Spotlight indexes hive partitions from the file's folder path as `com_rkrug_parquet_partitions` (`key=value`, percent-decoded, up to 32) and `part-<key>-<value>` keywords. Quick Look's folder preview uses the same partition parser (values are now percent-decoded there too).
 - Manager window: content now shares the window toolbar, so the first section header is no longer blurred.

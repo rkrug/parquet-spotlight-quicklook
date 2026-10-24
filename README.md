@@ -67,15 +67,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.4.3
+./scripts/release.sh v0.5.0
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.4.3.dmg`
-- creates `release/Parquet-Spotlight-0.4.3.zip`
-- creates `release/Parquet-Spotlight-0.4.3.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.5.0.dmg`
+- creates `release/Parquet-Spotlight-0.5.0.zip`
+- creates `release/Parquet-Spotlight-0.5.0.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
