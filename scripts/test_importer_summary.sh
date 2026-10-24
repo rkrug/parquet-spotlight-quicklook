@@ -33,4 +33,9 @@ xcrun clang -O2 -Wall -Wextra -Werror \
   -framework CoreFoundation \
   -o "$BIN"
 
-"$BIN" "$ROOT_DIR/Tests/fixtures"
+HIVE_DIR="$(mktemp -d)"
+trap 'rm -rf "$HIVE_DIR"' EXIT
+mkdir -p "$HIVE_DIR/year=2024/region=EU%20West"
+cp "$ROOT_DIR/Tests/fixtures/flat.parquet" "$HIVE_DIR/year=2024/region=EU%20West/part-0.parquet"
+
+"$BIN" "$ROOT_DIR/Tests/fixtures" "$HIVE_DIR/year=2024/region=EU%20West/part-0.parquet"

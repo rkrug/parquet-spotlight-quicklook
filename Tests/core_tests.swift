@@ -202,6 +202,7 @@ func runFooterFixtureTests(fixturesDir: String) {
     let many = (1...100).map { "k\($0)=v" }.joined(separator: "/")
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
+    runFooterDetailTests(fixturesDir: fixturesDir)
     runDatasetTests(fixturesDir: fixturesDir)
     runCorruptedFooterTests(fixturesDir: fixturesDir)
 
@@ -209,6 +210,47 @@ func runFooterFixtureTests(fixturesDir: String) {
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
     assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
+// footer.parquet's writer, metadata, codecs, row groups and date ranges are set by make_fixtures.R.
+private func runFooterDetailTests(fixturesDir: String) {
+    func utc(_ iso: String) -> Date {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)!
+    }
+    let s = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/footer.parquet"))
+    assertEqual(s.createdBy, "parquet-cpp-arrow version 24.0.0", "footer: created_by")
+    assertEqual(s.keyValueMetadata.first { $0.key == "owner" }?.value, "rkrug", "footer: owner metadata")
+    assertTrue(s.keyValueMetadata.contains { $0.key == "ARROW:schema" && $0.valueLength > 0 }, "footer: ARROW:schema key")
+    assertEqual(s.rowGroupCount, 3, "footer: row group count")
+    assertEqual(s.rowGroups.map(\.rows), [4, 4, 2], "footer: rows per row group")
+    assertTrue(s.rowGroups.allSatisfy { $0.compressedSize > 0 && $0.totalByteSize > 0 }, "footer: row group sizes")
+    assertEqual(
+        s.rowGroups.reduce(0) { $0 + $1.compressedSize },
+        s.columns.reduce(0) { $0 + $1.compressedSize },
+        "footer: row group and column compressed sizes agree"
+    )
+    let byName = Dictionary(uniqueKeysWithValues: s.columns.map { ($0.name, $0) })
+    assertEqual(byName["d"]?.codecs, ["SNAPPY"], "footer: d codec")
+    assertEqual(byName["v"]?.codecs, ["ZSTD"], "footer: v codec")
+    assertTrue(s.columns.allSatisfy { $0.uncompressedSize > 0 }, "footer: uncompressed sizes")
+    assertEqual(byName["d"]?.minDate, utc("2023-03-01T00:00:00Z"), "footer: d min")
+    assertEqual(byName["d"]?.maxDate, utc("2024-11-30T00:00:00Z"), "footer: d max")
+    assertEqual(byName["ts_ms"]?.minDate, utc("2020-01-01T00:00:00.123Z"), "footer: ts_ms min")
+    assertEqual(byName["ts_ms"]?.maxDate, utc("2021-06-30T12:00:00Z"), "footer: ts_ms max")
+    assertEqual(byName["ts_ns"]?.minDate, utc("1999-12-31T23:59:59Z"), "footer: ts_ns min")
+    assertEqual(byName["ts_ns"]?.maxDate, utc("2000-01-01T00:00:00Z"), "footer: ts_ns max")
+    assertTrue(byName["v"]?.minDate == nil, "footer: no date range for int32")
+    assertEqual(s.dateRange?.min, utc("1999-12-31T23:59:59Z"), "footer: overall date min")
+    assertEqual(s.dateRange?.max, utc("2024-11-30T00:00:00Z"), "footer: overall date max")
+
+    let rowgroups = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/rowgroups.parquet"))
+    assertEqual(rowgroups.rowGroupCount, 10, "rowgroups.parquet: row group count")
+    assertTrue(rowgroups.dateRange == nil, "rowgroups.parquet: no date columns")
+    let flat = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/flat.parquet"))
+    assertEqual(flat.dateRange?.min, utc("2026-01-01T00:00:00Z"), "flat.parquet: date min (nulls ignored)")
+    assertEqual(flat.dateRange?.max, utc("2026-01-02T11:00:00Z"), "flat.parquet: date max (timestamp)")
 }
 
 // SplitMix64: a seeded generator, so a failing case can be replayed with PARQUET_FUZZ_SEED.
@@ -233,7 +275,7 @@ private func runCorruptedFooterTests(fixturesDir: String) {
     let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-fuzz-\(getpid()).parquet")
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    let files = ["flat.parquet", "nested.parquet", "rowgroups.parquet", "wide.parquet", "empty.parquet"]
+    let files = ["flat.parquet", "nested.parquet", "rowgroups.parquet", "wide.parquet", "empty.parquet", "footer.parquet"]
     let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = files.compactMap { name in
         guard let data = FileManager.default.contents(atPath: fixturesDir + "/" + name), data.count >= 12 else { return nil }
         let bytes = [UInt8](data)
