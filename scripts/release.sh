@@ -9,14 +9,19 @@ Examples:
   ./scripts/release.sh v0.7.0
   ./scripts/release.sh v0.7.0 --notes /tmp/release-notes.md
   ./scripts/release.sh v0.7.0 --skip-gh
+  ./scripts/release.sh v0.8.0-beta.1          # pre-release (beta channel), from dev or main
 
 Behavior:
   1) Generates app icon and builds artifacts
   2) Packages Parquet Quick Look and Index.app into a DMG
   3) Creates/updates GitHub release and uploads DMG + SHA256 (unless --skip-gh)
 
+Pre-release tags (vX.Y.Z-<pre-release>, e.g. v0.8.0-beta.1) are published as GitHub
+pre-releases, which only apps on the Beta update channel are offered.
+
 Preflight checks:
-  - current git branch must be main
+  - the tag must match the app version (ParquetReleaseVersion, else CFBundleShortVersionString)
+  - current git branch must be main (dev is also allowed for pre-releases)
   - git working tree must be clean (no tracked or untracked changes)
   - local main must be fully synced with its upstream (no ahead/behind)
 EOF
@@ -54,10 +59,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: tag must look like v0.7.0 (or 0.7.0)" >&2
+if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+  echo "error: tag must look like v0.7.0 or v0.8.0-beta.1 (the v is optional)" >&2
   exit 2
 fi
+[[ "$TAG" == v* ]] || TAG="v$TAG"
+PRERELEASE=0
+[[ "$TAG" == *-* ]] && PRERELEASE=1
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -96,9 +104,17 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "error: release must be run from branch 'main' (current: $CURRENT_BRANCH)" >&2
+if [[ "$CURRENT_BRANCH" != "main" && ! ( $PRERELEASE -eq 1 && "$CURRENT_BRANCH" == "dev" ) ]]; then
+  echo "error: release must be run from branch 'main' (or 'dev' for a pre-release; current: $CURRENT_BRANCH)" >&2
   echo "hint: git checkout main" >&2
+  exit 1
+fi
+
+APP_PLIST="$ROOT_DIR/preview/app/Info.plist"
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :ParquetReleaseVersion' "$APP_PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PLIST")"
+if [[ "$VERSION" != "$APP_VERSION" ]]; then
+  echo "error: tag $TAG does not match the app version $APP_VERSION (preview/app/Info.plist)" >&2
   exit 1
 fi
 
@@ -109,8 +125,8 @@ fi
 
 UPSTREAM_REF="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
 if [[ -z "$UPSTREAM_REF" ]]; then
-  echo "error: main has no upstream tracking branch configured" >&2
-  echo "hint: git branch --set-upstream-to origin/main main" >&2
+  echo "error: $CURRENT_BRANCH has no upstream tracking branch configured" >&2
+  echo "hint: git branch --set-upstream-to origin/$CURRENT_BRANCH $CURRENT_BRANCH" >&2
   exit 1
 fi
 
@@ -123,11 +139,11 @@ fi
 
 read -r BEHIND_COUNT AHEAD_COUNT <<<"$(git rev-list --left-right --count "${UPSTREAM_REF}...HEAD")"
 if [[ "$AHEAD_COUNT" -ne 0 ]]; then
-  echo "error: local main is ahead of $UPSTREAM_REF by $AHEAD_COUNT commit(s); push first" >&2
+  echo "error: local $CURRENT_BRANCH is ahead of $UPSTREAM_REF by $AHEAD_COUNT commit(s); push first" >&2
   exit 1
 fi
 if [[ "$BEHIND_COUNT" -ne 0 ]]; then
-  echo "error: local main is behind $UPSTREAM_REF by $BEHIND_COUNT commit(s); pull/rebase first" >&2
+  echo "error: local $CURRENT_BRANCH is behind $UPSTREAM_REF by $BEHIND_COUNT commit(s); pull/rebase first" >&2
   exit 1
 fi
 
@@ -175,15 +191,16 @@ echo "==> Publishing release assets with gh"
 if gh release view "$TAG" >/dev/null 2>&1; then
   gh release upload "$TAG" "$DMG_PATH" "$ZIP_PATH" "$SHA_PATH" --clobber
 else
-  if [[ -n "$NOTES_FILE" ]]; then
-    gh release create "$TAG" "$DMG_PATH" "$ZIP_PATH" "$SHA_PATH" \
-      --title "$TAG" \
-      --notes-file "$NOTES_FILE"
-  else
-    gh release create "$TAG" "$DMG_PATH" "$ZIP_PATH" "$SHA_PATH" \
-      --title "$TAG" \
-      --generate-notes
+  CREATE_ARGS=(--title "$TAG" --target "$CURRENT_BRANCH")
+  if [[ $PRERELEASE -eq 1 ]]; then
+    CREATE_ARGS+=(--prerelease)
   fi
+  if [[ -n "$NOTES_FILE" ]]; then
+    CREATE_ARGS+=(--notes-file "$NOTES_FILE")
+  else
+    CREATE_ARGS+=(--generate-notes)
+  fi
+  gh release create "$TAG" "$DMG_PATH" "$ZIP_PATH" "$SHA_PATH" "${CREATE_ARGS[@]}"
 fi
 
 echo "==> Done"

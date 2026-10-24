@@ -29,6 +29,7 @@ private enum SettingsKeys {
     static let updateCheckInterval = "updateCheckInterval"
     static let lastUpdateCheckAt = "lastUpdateCheckAt"
     static let skippedUpdateVersion = "skippedUpdateVersion"
+    static let updateChannel = "updateChannel"
 }
 
 private enum UpdateCheckInterval: String, CaseIterable {
@@ -99,13 +100,21 @@ private final class AppModel: ObservableObject {
     @Published var recursiveScan = true
     @Published var autoCheckUpdates = true
     @Published var updateCheckInterval: UpdateCheckInterval = .daily
+    // Saved on change: the update check reads it even if settings are never applied.
+    @Published var updateChannel: ParquetUpdateChannel = .stable {
+        didSet {
+            (UserDefaults(suiteName: SettingsKeys.suite) ?? .standard).set(updateChannel.rawValue, forKey: SettingsKeys.updateChannel)
+        }
+    }
     @Published private(set) var recentErrors: [String] = []
     private let appDisplayName = "Parquet Quick Look and Index"
     private let maxRecentErrors = 20
 
-    private struct GitHubLatestRelease: Decodable {
+    private struct GitHubRelease: Decodable {
         let tag_name: String
         let html_url: String
+        let prerelease: Bool?
+        let draft: Bool?
         let assets: [Asset]?
 
         struct Asset: Decodable {
@@ -144,7 +153,8 @@ private final class AppModel: ObservableObject {
     private let previewCacheDir = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Caches/com.rkrug.parquetindexer.previewhost.preview")
     private let updateValidator = ParquetUpdateValidator()
-    private let releaseCheckURL = URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")!
+    // Release list for both channels (`/releases/latest` never returns pre-releases).
+    private let releaseCheckURL = URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases?per_page=30")!
 
     init() {
         loadSettings()
@@ -214,6 +224,7 @@ private final class AppModel: ObservableObject {
         } else {
             updateCheckInterval = .daily
         }
+        updateChannel = defaults.string(forKey: SettingsKeys.updateChannel).flatMap(ParquetUpdateChannel.init(rawValue:)) ?? .stable
     }
 
     func saveSettings() {
@@ -336,21 +347,26 @@ private final class AppModel: ObservableObject {
                 return
             }
 
-            guard let release = try? JSONDecoder().decode(GitHubLatestRelease.self, from: data) else {
+            guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
                 DispatchQueue.main.async {
                     if manual { self.showUpdateErrorDialog("Could not parse release information.") }
                 }
                 return
             }
 
-            guard let latestVersion = ParquetSemVer(strictTag: release.tag_name) else {
+            let candidates = releases.map {
+                ParquetReleaseSelector.Candidate(tag: $0.tag_name, isPreRelease: $0.prerelease ?? false, isDraft: $0.draft ?? false)
+            }
+            guard
+                let index = ParquetReleaseSelector.newest(candidates, channel: self.updateChannel),
+                let latestVersion = ParquetSemVer(strictTag: releases[index].tag_name)
+            else {
                 DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog("Could not check for updates: latest release tag is not valid semver (expected vX.Y.Z).")
-                    }
+                    if manual { self.showUpToDateDialog() }
                 }
                 return
             }
+            let release = releases[index]
 
             let currentVersion = ParquetSemVer(looseVersion: self.currentVersion()) ?? .zero
             let skippedVersion = defaults.string(forKey: SettingsKeys.skippedUpdateVersion) ?? ""
@@ -376,7 +392,7 @@ private final class AppModel: ObservableObject {
                 let package = self.updatePackage(for: release, version: latestVersion.normalized)
                 DispatchQueue.main.async {
                     self.showUpdateAvailableDialog(
-                        version: "v\(latestVersion.normalized)",
+                        version: "v\(latestVersion.normalized)" + (latestVersion.isPreRelease ? " (beta)" : ""),
                         skippedVersion: latestVersion.normalized,
                         url: releaseURL,
                         package: package
@@ -424,7 +440,7 @@ private final class AppModel: ObservableObject {
 
     // nil when the release has no signed ZIP, the app has no update key, or the app's folder is
     // not writable: the dialog then only offers the release page.
-    private func updatePackage(for release: GitHubLatestRelease, version: String) -> UpdatePackage? {
+    private func updatePackage(for release: GitHubRelease, version: String) -> UpdatePackage? {
         guard
             Bundle.main.object(forInfoDictionaryKey: ParquetSelfUpdate.publicKeyInfoKey) is String,
             fm.isWritableFile(atPath: Bundle.main.bundleURL.deletingLastPathComponent().path)
@@ -507,7 +523,7 @@ private final class AppModel: ObservableObject {
         let info = Bundle(url: newApp)?.infoDictionary
         guard
             info?["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier,
-            info?["CFBundleShortVersionString"] as? String == package.version
+            info.map(Self.releaseVersion(info:)) == package.version
         else {
             throw UpdateInstallError.failed("The downloaded app is not \(appDisplayName) \(package.version).")
         }
@@ -581,8 +597,14 @@ private final class AppModel: ObservableObject {
         alert.runModal()
     }
 
+    // Full version including a beta suffix (`ParquetReleaseVersion`, e.g. 0.7.0-beta.1);
+    // CFBundleShortVersionString stays numeric for macOS.
     func currentVersion() -> String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
+        Self.releaseVersion(info: Bundle.main.infoDictionary ?? [:])
+    }
+
+    private static func releaseVersion(info: [String: Any]) -> String {
+        (info["ParquetReleaseVersion"] as? String) ?? (info["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
     func refreshStatus() {
@@ -1206,6 +1228,13 @@ private struct ContentView: View {
                     }
                 }
                 .disabled(!model.autoCheckUpdates)
+                Picker("Release channel", selection: $model.updateChannel) {
+                    Text("Stable").tag(ParquetUpdateChannel.stable)
+                    Text("Beta").tag(ParquetUpdateChannel.beta)
+                }
+                Text("Beta also offers pre-releases. Switching back to Stable never downgrades: you stay on the beta until a newer stable release is out.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("Check for Updates Now") {
                     model.checkForUpdates(manual: true)
                 }
