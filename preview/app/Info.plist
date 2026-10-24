@@ -26,6 +26,49 @@
   <string>13.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <!-- LaunchServices registers these from the installed app (after its first launch);
+       declarations inside the Spotlight importer alone are not picked up. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.rkrug.parquet</string>
+      <key>UTTypeDescription</key>
+      <string>Apache Parquet File</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+        <string>public.content</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>parquet</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>application/vnd.apache.parquet</string>
+      </dict>
+    </dict>
+    <dict>
+      <!-- A normal, browsable folder (not a package) holding a Parquet dataset. -->
+      <key>UTTypeIdentifier</key>
+      <string>com.rkrug.parquet-database</string>
+      <key>UTTypeDescription</key>
+      <string>Parquet Database</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>parquet_ds</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
   <key>ParquetUpdatePublicKey</key>
   <string>X9k4PZCtSZ/JnBNSi3EVo5w41K/qwZVyl75pBijimFE=</string>
 </dict>

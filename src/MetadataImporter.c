@@ -40,6 +40,7 @@ static CFStringRef kParquetIsValidKey = CFSTR("com_rkrug_parquet_is_valid");
 static CFStringRef kParquetRowCountKey = CFSTR("com_rkrug_parquet_row_count");
 static CFStringRef kParquetColumnCountKey = CFSTR("com_rkrug_parquet_column_count");
 static CFStringRef kParquetColumnsKey = CFSTR("com_rkrug_parquet_columns");
+static CFStringRef kParquetColumnTypesKey = CFSTR("com_rkrug_parquet_column_types");
 static CFStringRef kParquetPartitionsKey = CFSTR("com_rkrug_parquet_partitions");
 
 static void set_int64_attribute(CFMutableDictionaryRef attributes, CFStringRef key, int64_t value) {
@@ -224,8 +225,10 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
     uint32_t footerLen = 0;
     int64_t rowCount = 0;
     void *columnsRef = NULL;
-    if (parquet_read_summary(path, &fileSize, &footerLen, &rowCount, &columnsRef) == 1) {
+    void *columnTypesRef = NULL;
+    if (parquet_read_summary(path, &fileSize, &footerLen, &rowCount, &columnsRef, &columnTypesRef) == 1) {
         CFArrayRef columns = (CFArrayRef)columnsRef;
+        CFArrayRef columnTypes = (CFArrayRef)columnTypesRef;
         CFArrayRef partitions = (CFArrayRef)parquet_read_partitions(path);
         CFMutableArrayRef extraKeywords = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
         int64_t columnCount = 0;
@@ -233,6 +236,9 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
         if (columns != NULL && CFArrayGetCount(columns) > 0) {
             columnCount = (int64_t)CFArrayGetCount(columns);
             CFDictionarySetValue(attributes, kParquetColumnsKey, columns);
+            if (columnTypes != NULL) {
+                CFDictionarySetValue(attributes, kParquetColumnTypesKey, columnTypes);
+            }
             append_keywords(extraKeywords, columns, CFSTR("col-"));
         }
         if (partitions != NULL) {
@@ -295,6 +301,9 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
         }
         if (partitions != NULL) {
             CFRelease(partitions);
+        }
+        if (columnTypes != NULL) {
+            CFRelease(columnTypes);
         }
         if (columns != NULL) {
             CFRelease(columns);

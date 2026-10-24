@@ -75,14 +75,25 @@ int main(int argc, char **argv) {
         uint32_t footerLength = 0;
         int64_t rowCount = -1;
         void *columnsRef = NULL;
-        int32_t isValid = parquet_read_summary(path, &fileSize, &footerLength, &rowCount, &columnsRef);
+        void *columnTypesRef = NULL;
+        int32_t isValid = parquet_read_summary(path, &fileSize, &footerLength, &rowCount, &columnsRef, &columnTypesRef);
         CFArrayRef columns = (CFArrayRef)columnsRef;
+        CFArrayRef columnTypes = (CFArrayRef)columnTypesRef;
 
         check(isValid == atoi(valid), file, "valid");
         check(rowCount == strtoll(rows, NULL, 10), file, "row count");
         check((columns ? CFArrayGetCount(columns) : 0) == atol(count), file, "column count");
         join_columns(columns, joined, sizeof(joined));
         check(strcmp(joined, paths) == 0, file, "column paths");
+        check((columnTypes ? CFArrayGetCount(columnTypes) : 0) == (columns ? CFArrayGetCount(columns) : 0), file, "one type per column");
+        if (strcmp(file, "flat.parquet") == 0) {
+            join_columns(columnTypes, joined, sizeof(joined));
+            check(strcmp(joined, "id:int32,score:double,name:string,flag:bool,day:date32[day],ts:timestamp[us],amount:decimal(10,2)") == 0,
+                  file, "column types");
+        }
+        if (columnTypes != NULL) {
+            CFRelease(columnTypes);
+        }
 
         if (columns != NULL) {
             CFRelease(columns);

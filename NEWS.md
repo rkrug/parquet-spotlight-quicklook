@@ -1,5 +1,12 @@
 # News
 
+## Unreleased
+
+### Changes
+
+- `.parquet` files are now a registered file type ("Apache Parquet File"), and folders named `*.parquet_ds` are recognised as "Parquet Database".
+- Spotlight indexes column types, e.g. `mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'`.
+
 ## 0.6.0 - 2026-10-24
 
 ### Enhancements

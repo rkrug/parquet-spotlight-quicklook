@@ -298,6 +298,7 @@ mdfind 'com_rkrug_parquet_column_count > 100'
 mdfind 'com_rkrug_parquet_columns == "species"'
 mdfind 'kMDItemKeywords == "col-species"'
 mdfind 'com_rkrug_parquet_partitions == "year=2024"'
+mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'
 mdfind 'kMDItemKeywords == "part-year-2024"'
 ```
 
@@ -375,6 +376,7 @@ Custom Parquet fields:
 - `com_rkrug_parquet_row_count` (`CFNumber`)
 - `com_rkrug_parquet_column_count` (`CFNumber`)
 - `com_rkrug_parquet_columns` (`CFString`, multivalued)
+- `com_rkrug_parquet_column_types` (`CFString`, multivalued)
 - `com_rkrug_parquet_partitions` (`CFString`, multivalued)
 
 ## Queryable `mdfind` Properties
@@ -403,6 +405,10 @@ Custom Parquet fields:
   - Leaf column paths parsed from the footer schema (nested fields joined with `.`, e.g. `point.x`, `tags.list.element`).
   - Example: `mdfind 'com_rkrug_parquet_columns == "Species"'`
 
+- `com_rkrug_parquet_column_types` (`CFString`, multivalued):
+  - `name:type` per leaf column, with the Arrow-style logical type shown in Quick Look, e.g. `species:string`, `ts:timestamp[us]`, `amount:decimal(10,2)`.
+  - Example: `mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'`
+
 - `com_rkrug_parquet_partitions` (`CFString`, multivalued):
   - Hive-style partitions from the file's folder path (`key=value` folder names, outermost first, values percent-decoded), e.g. `year=2024` for `.../year=2024/region=EU/part-0.parquet`. Taken from the path only; row data is never read.
   - Example: `mdfind 'com_rkrug_parquet_partitions == "year=2024"'`
@@ -424,7 +430,7 @@ Keyword tokens written by importer:
 
 ## Notes
 
-- UTI: `com.rkrug.parquet`
+- UTI: `com.rkrug.parquet` (`.parquet` files, "Apache Parquet File") and `com.rkrug.parquet-database` (folders named `*.parquet_ds`, "Parquet Database"; a normal folder, not a package). Both are declared by the app and registered once it has been launched; Quick Look shows the dataset summary for `.parquet_ds` folders.
 - Bundle ID: `com.rkrug.parquetindexer.importer`
 - Plugin factory UUID: `0E198062-E6D8-4AC2-BBCE-FB860A43A116`
 - Preview extension bundle ID: `com.rkrug.parquetindexer.previewhost.preview`

@@ -5,14 +5,16 @@ import Foundation
 // shared with the Quick Look extension.
 //
 // Returns 1 for a valid Parquet trailer, 0 otherwise. *columns receives a +1 retained
-// CFArray of unique column names (capped at maxIndexedColumns), or NULL when there are none.
+// CFArray of unique column names (capped at maxIndexedColumns), or NULL when there are none;
+// *columnTypes the matching "name:type" strings (Arrow-style logical type, e.g. "ts:timestamp[us]").
 @_cdecl("parquet_read_summary")
 public func parquetReadSummary(
     _ path: UnsafePointer<CChar>,
     _ fileSize: UnsafeMutablePointer<UInt64>,
     _ footerLength: UnsafeMutablePointer<UInt32>,
     _ rowCount: UnsafeMutablePointer<Int64>,
-    _ columns: UnsafeMutablePointer<UnsafeMutableRawPointer?>
+    _ columns: UnsafeMutablePointer<UnsafeMutableRawPointer?>,
+    _ columnTypes: UnsafeMutablePointer<UnsafeMutableRawPointer?>
 ) -> Int32 {
     let summary = ParquetFooter.read(at: URL(fileURLWithPath: String(cString: path)))
     fileSize.pointee = summary.fileSize
@@ -20,14 +22,17 @@ public func parquetReadSummary(
     rowCount.pointee = summary.rowCount
 
     var names: [String] = []
+    var types: [String] = []
     var seen = Set<String>()
     for column in summary.columns where seen.insert(column.name).inserted {
         names.append(column.name)
+        types.append("\(column.name):\(column.logicalType)")
         if names.count >= ParquetParserBounds.maxIndexedColumns {
             break
         }
     }
     columns.pointee = names.isEmpty ? nil : Unmanaged.passRetained(names as CFArray).toOpaque()
+    columnTypes.pointee = types.isEmpty ? nil : Unmanaged.passRetained(types as CFArray).toOpaque()
 
     return summary.valid ? 1 : 0
 }
