@@ -4,6 +4,7 @@
 
 ### Bug Fixes
 
+- Spotlight now indexes correct row counts and the full list of column names. Quick Look and Spotlight share one footer parser, checked against Apache Arrow in the test suite.
 - The app and Quick Look extension now run on macOS 13 and later on both Apple silicon and Intel Macs. 0.4.3 builds only ran on macOS 26 with Apple silicon.
 - `install.sh` and `uninstall.sh` now handle apps installed from the DMG into `/Applications`, and uninstall no longer stops on the protected settings container.
 
