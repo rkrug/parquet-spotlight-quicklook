@@ -35,20 +35,51 @@ func runCoreTests() {
     // SemVer parsing/comparison.
     assertTrue(ParquetSemVer(strictTag: "v1.2.3") != nil, "strict tag should parse")
     assertTrue(ParquetSemVer(strictTag: "1.2.3") == nil, "strict tag should require v-prefix")
-    assertTrue(ParquetSemVer(strictTag: "v1.2.3-beta.1") == nil, "strict tag should reject prerelease")
+    assertEqual(ParquetSemVer(strictTag: "v1.2.3-beta.1")?.normalized, "1.2.3-beta.1", "strict tag accepts a pre-release")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3+build.5") == nil, "strict tag rejects build metadata")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-") == nil, "empty pre-release is invalid")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-beta..1") == nil, "empty pre-release identifier is invalid")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-be ta") == nil, "pre-release identifiers are alphanumeric")
+    // SemVer 2.0 precedence example, ascending.
+    let ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0", "1.0.1-beta.1"]
+        .map { ParquetSemVer(looseVersion: $0)! }
+    for (a, b) in zip(ordered, ordered.dropFirst()) {
+        assertTrue(a < b && !(b < a), "pre-release order: \(a.normalized) < \(b.normalized)")
+    }
+    assertTrue(ParquetSemVer(looseVersion: "0.7.0-beta.1")!.isPreRelease, "beta is a pre-release")
     assertEqual(ParquetSemVer(looseVersion: "v0.4.0")?.normalized, "0.4.0", "loose version should normalize")
     assertTrue(ParquetSemVer(looseVersion: "1.10.0")! > ParquetSemVer(looseVersion: "1.2.9")!, "numeric version comparison should be correct")
 
     // Trusted URLs.
     let validator = ParquetUpdateValidator()
     assertTrue(
-        validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")),
+        validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases?per_page=30")),
         "trusted GitHub API URL should pass"
     )
     assertTrue(
-        !validator.isTrustedReleaseAPIResponseURL(URL(string: "http://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")),
+        !validator.isTrustedReleaseAPIResponseURL(URL(string: "http://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases")),
         "http API URL should fail"
     )
+    assertTrue(
+        !validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/other/repo/releases")),
+        "other repository's release list should fail"
+    )
+
+    // Release channels: stable never sees a pre-release, beta takes the newest of both.
+    typealias C = ParquetReleaseSelector.Candidate
+    let releases = [
+        C(tag: "v0.7.0-beta.2", isPreRelease: true, isDraft: false),
+        C(tag: "v0.8.0", isPreRelease: false, isDraft: true),
+        C(tag: "v0.7.0-beta.1", isPreRelease: true, isDraft: false),
+        C(tag: "v0.6.0", isPreRelease: false, isDraft: false),
+        C(tag: "v0.6.5-rc.1", isPreRelease: false, isDraft: false),
+        C(tag: "nightly", isPreRelease: true, isDraft: false),
+    ]
+    assertEqual(ParquetReleaseSelector.newest(releases, channel: .stable), 3, "stable: newest non-pre-release, non-draft")
+    assertEqual(ParquetReleaseSelector.newest(releases, channel: .beta), 0, "beta: newest including pre-releases")
+    let withFinal = releases + [C(tag: "v0.7.0", isPreRelease: false, isDraft: false)]
+    assertEqual(ParquetReleaseSelector.newest(withFinal, channel: .beta), 6, "beta: final release beats its betas")
+    assertTrue(ParquetReleaseSelector.newest([], channel: .beta) == nil, "no releases")
     assertTrue(
         validator.isTrustedReleasePageURL(URL(string: "https://github.com/rkrug/parquet-spotlight-quicklook/releases/tag/v0.4.0")!, expectedTag: "v0.4.0"),
         "trusted release page should pass"

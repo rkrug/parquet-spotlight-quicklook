@@ -116,6 +116,10 @@ xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 
 When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `Install Update`. The app downloads the release ZIP, verifies its Ed25519 signature against the key built into the app, checks the unpacked app (bundle ID, version, code signature), then quits, swaps itself in place, and relaunches; the new app updates the Spotlight importer on launch. If the release has no signature, the app's folder is not writable, or any check fails, nothing is installed and the release page is offered instead.
 
+### Beta channel (0.7.0-beta.1 onwards)
+
+`Updates` → `Release channel`: `Stable` (default) offers only regular releases; `Beta` also offers pre-releases (tags like `v0.8.0-beta.1`, published as GitHub pre-releases, signed and installed the same way). Switching back to `Stable` never downgrades: a beta stays installed until a newer stable release is out (e.g. `0.8.0` after `0.8.0-beta.2`). Apps older than 0.7.0-beta.1 only see stable releases.
+
 Signing for maintainers: `swift scripts/sign_update.swift keygen` creates a key pair once. The private key goes into the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` (the release workflow then uploads `Parquet-Spotlight-<version>.zip.sig`), the public key into `ParquetUpdatePublicKey` in `preview/app/Info.plist`.
 
 ### Manually

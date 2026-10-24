@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.7.0 - 2026-10-24
+## 0.7.0-beta.1 - 2026-10-24 (pre-release)
 
-- Bumped importer, app, and extension versions to `0.7.0`.
+- Bumped importer, app, and extension versions to `0.7.0` (build 13); the app's `ParquetReleaseVersion` is `0.7.0-beta.1`.
+- Beta channel (#30): `ParquetSemVer` parses and orders SemVer pre-releases (`0.7.0-beta.1 < 0.7.0`); `ParquetReleaseSelector` picks the newest release per channel (Stable skips pre-releases and drafts); the update check reads `/releases` instead of `/releases/latest`; `Release channel` picker (Stable/Beta) in the Updates settings, saved on change; update dialog marks betas. `release.sh` accepts pre-release tags from `dev` and creates GitHub pre-releases; the release workflow checks the tag against the app version and the pre-release flag.
 - The app declares the file types: `.parquet` as `com.rkrug.parquet` ("Apache Parquet File"; previously macOS only knew a dynamic type) and folders named `*.parquet_ds` as `com.rkrug.parquet-database` ("Parquet Database", a normal folder). Quick Look supports the database type. The importer now imports the `.parquet` declaration instead of exporting it.
 - Spotlight indexes column types as `com_rkrug_parquet_column_types` (`name:type`, e.g. `ts:timestamp[us]`).
 - Footer parser reads `created_by`, key/value metadata, and per row group the column chunks (codec, compressed/uncompressed size, statistics), keeping per-column totals, the first 200 row groups, 256 metadata entries and values up to 4 KiB (`ParquetParserBounds`). `parse(footer:)` now returns a `Summary`.
