@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.1 - 2026-10-24
+
+- Bumped importer, app, and extension versions to `0.5.1`.
+- The manager app now updates an older Spotlight importer in `~/Library/Spotlight` on launch (compares `CFBundleShortVersionString`, then `CFBundleVersion`; never downgrades), so updating is just replacing the app. Previously the importer was only installed when missing, and replacing the app left the old importer in place.
+- README: update procedure; rollback needs `Re-Install`.
+
 ## 0.5.0 - 2026-10-24
 
 - Bumped importer, app, and extension versions to `0.5.0`.

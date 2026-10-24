@@ -1,5 +1,11 @@
 # News
 
+## 0.5.1 - 2026-10-24
+
+### Changes
+
+- Updating is now just replacing the app: on launch it replaces an older Spotlight importer automatically. (Installing 0.5.0 or an older version still needs `Re-Install` once.)
+
 ## 0.5.0 - 2026-10-24
 
 ### Bug Fixes

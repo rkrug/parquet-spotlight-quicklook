@@ -50,6 +50,32 @@ public struct ParquetSemVer: Comparable {
     }
 }
 
+// Decides whether the importer bundled in the app should replace the installed one in
+// ~/Library/Spotlight on launch, so updating is just replacing the app.
+public enum ParquetImporterUpdate {
+    // Replace when the bundled importer is newer (CFBundleShortVersionString, then
+    // CFBundleVersion) or the installed version is unreadable. Never downgrades.
+    public static func shouldReplace(
+        installedVersion: String?,
+        installedBuild: String?,
+        bundledVersion: String?,
+        bundledBuild: String?
+    ) -> Bool {
+        guard let bundled = bundledVersion.flatMap(ParquetSemVer.init(looseVersion:)) else {
+            return false
+        }
+        guard let installed = installedVersion.flatMap(ParquetSemVer.init(looseVersion:)) else {
+            return true
+        }
+        if bundled != installed {
+            return installed < bundled
+        }
+        let bundledBuildNumber = Int(bundledBuild ?? "") ?? 0
+        let installedBuildNumber = Int(installedBuild ?? "") ?? 0
+        return installedBuildNumber < bundledBuildNumber
+    }
+}
+
 public struct ParquetUpdateValidator {
     public let expectedGitHubHost: String
     public let expectedGitHubAPIHost: String
