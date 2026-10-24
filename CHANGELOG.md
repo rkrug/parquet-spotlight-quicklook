@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.4.3 - 2026-03-20
+## 0.4.3 - 2026-10-24
 
 - Added `Export Schema (JSON)` button in Quick Look previews (file and dataset views).
 - Added Arrow-friendly schema export payload:
