@@ -21,9 +21,9 @@
   <key>CFBundleShortVersionString</key>
   <string>0.7.1</string>
   <key>ParquetReleaseVersion</key>
-  <string>0.7.1-beta.1</string>
+  <string>0.7.1</string>
   <key>CFBundleVersion</key>
-  <string>14</string>
+  <string>15</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSPrincipalClass</key>

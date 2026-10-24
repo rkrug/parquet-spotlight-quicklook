@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.1 - 2026-10-24
+
+- Stable release of 0.7.1-beta.1 (and 0.7.0-beta.1); bumped importer, app, and extension builds to `15`, `ParquetReleaseVersion` is `0.7.1`.
+
 ## 0.7.1-beta.1 - 2026-10-24 (pre-release)
 
 - Bumped importer, app, and extension versions to `0.7.1` (build 14); the app's `ParquetReleaseVersion` is `0.7.1-beta.1`.

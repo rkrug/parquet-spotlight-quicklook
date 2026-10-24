@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-  echo "error: tag must look like v0.7.0 or v0.8.0-beta.1 (the v is optional)" >&2
+  echo "error: tag must look like v0.7.1 or v0.8.0-beta.1 (the v is optional)" >&2
   exit 2
 fi
 [[ "$TAG" == v* ]] || TAG="v$TAG"
