@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 - The app declares the file types: `.parquet` as `com.rkrug.parquet` ("Apache Parquet File"; previously macOS only knew a dynamic type) and folders named `*.parquet_ds` as `com.rkrug.parquet-database` ("Parquet Database", a normal folder). Quick Look supports the database type. The importer now imports the `.parquet` declaration instead of exporting it.
 - Spotlight indexes column types as `com_rkrug_parquet_column_types` (`name:type`, e.g. `ts:timestamp[us]`).
+- Core tests corrupt the fixture footers (bit flips, truncation, `0xff` runs, random length fields, random bytes; 3000 seeded cases, `PARQUET_FUZZ_SEED` / `PARQUET_FUZZ_CASES` to override) and check `ParquetFooter.parse` / `read` for no trap, no hang (< 1 s per case), and the column bound (#16).
+- CI: a `compat` job runs the build and tests natively on `macos-15-intel` and `macos-15`, the oldest hosted macOS now that macOS 13/14 runners are retired (#17).
 
 ## 0.6.0 - 2026-10-24
 

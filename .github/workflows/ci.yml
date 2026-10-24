@@ -18,3 +18,26 @@ jobs:
 
       - name: Script smoke tests
         run: ./scripts/test_scripts.sh
+
+  # Native runs on Intel and on the oldest macOS GitHub still hosts (macOS 13/14 runners are retired).
+  # Separate from `build`, which is the required status check on main.
+  compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build bundles
+        run: ./scripts/build.sh
+
+      - name: Script smoke tests
+        run: ./scripts/test_scripts.sh
+
+      - name: Architecture and OS
+        run: uname -m && sw_vers -productVersion
