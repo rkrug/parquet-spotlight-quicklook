@@ -295,68 +295,20 @@ private final class AppModel: ObservableObject {
         }
         defaults.set(now, forKey: SettingsKeys.lastUpdateCheckAt)
 
-        var request = URLRequest(url: releaseCheckURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("ParquetQuickLookAndIndex", forHTTPHeaderField: "User-Agent")
-
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        fetchReleases { [weak self] result in
             guard let self else { return }
-
-            if let error {
+            let releases: [GitHubRelease]
+            switch result {
+            case .failure(let error):
                 DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog(ParquetUpdateErrorMapper.describeNetworkError(error))
-                    }
+                    if manual { self.showUpdateErrorDialog(error.message) }
                 }
                 return
+            case .success(let list):
+                releases = list
             }
 
-            guard let http = response as? HTTPURLResponse else {
-                DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog("Could not check for updates: invalid server response.")
-                    }
-                }
-                return
-            }
-
-            guard self.updateValidator.isTrustedReleaseAPIResponseURL(http.url) else {
-                DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog("Could not check for updates: response origin was not trusted.")
-                    }
-                }
-                return
-            }
-
-            guard (200...299).contains(http.statusCode) else {
-                DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog(ParquetUpdateErrorMapper.describeHTTPError(statusCode: http.statusCode, data: data))
-                    }
-                }
-                return
-            }
-
-            guard let data else {
-                DispatchQueue.main.async {
-                    if manual {
-                        self.showUpdateErrorDialog("Could not check for updates: empty server response.")
-                    }
-                }
-                return
-            }
-
-            guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
-                DispatchQueue.main.async {
-                    if manual { self.showUpdateErrorDialog("Could not parse release information.") }
-                }
-                return
-            }
-
-            let candidates = releases.map {
-                ParquetReleaseSelector.Candidate(tag: $0.tag_name, isPreRelease: $0.prerelease ?? false, isDraft: $0.draft ?? false)
-            }
+            let candidates = Self.candidates(releases)
             guard
                 let index = ParquetReleaseSelector.newest(candidates, channel: self.updateChannel),
                 let latestVersion = ParquetSemVer(strictTag: releases[index].tag_name)
@@ -375,13 +327,7 @@ private final class AppModel: ObservableObject {
                 if !manual && latestVersion.normalized == skippedVersion {
                     return
                 }
-                guard let releaseURL = URL(string: release.html_url) else {
-                    DispatchQueue.main.async {
-                        if manual { self.showUpdateErrorDialog("Latest release URL is invalid.") }
-                    }
-                    return
-                }
-                guard self.updateValidator.isTrustedReleasePageURL(releaseURL, expectedTag: release.tag_name) else {
+                guard let releaseURL = self.trustedReleasePage(release) else {
                     DispatchQueue.main.async {
                         if manual {
                             self.showUpdateErrorDialog("Could not check for updates: latest release page URL is not trusted.")
@@ -403,7 +349,114 @@ private final class AppModel: ObservableObject {
                     self.showUpToDateDialog()
                 }
             }
+        }
+    }
+
+    private struct ReleaseFetchError: Error {
+        let message: String
+    }
+
+    // GitHub's release list from the trusted API URL; calls back on a background queue.
+    private func fetchReleases(_ completion: @escaping (Result<[GitHubRelease], ReleaseFetchError>) -> Void) {
+        var request = URLRequest(url: releaseCheckURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("ParquetQuickLookAndIndex", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+            if let error {
+                return completion(.failure(ReleaseFetchError(message: ParquetUpdateErrorMapper.describeNetworkError(error))))
+            }
+            guard let http = response as? HTTPURLResponse else {
+                return completion(.failure(ReleaseFetchError(message: "Could not check for updates: invalid server response.")))
+            }
+            guard self.updateValidator.isTrustedReleaseAPIResponseURL(http.url) else {
+                return completion(.failure(ReleaseFetchError(message: "Could not check for updates: response origin was not trusted.")))
+            }
+            guard (200...299).contains(http.statusCode) else {
+                return completion(.failure(ReleaseFetchError(message: ParquetUpdateErrorMapper.describeHTTPError(statusCode: http.statusCode, data: data))))
+            }
+            guard let data else {
+                return completion(.failure(ReleaseFetchError(message: "Could not check for updates: empty server response.")))
+            }
+            guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
+                return completion(.failure(ReleaseFetchError(message: "Could not parse release information.")))
+            }
+            completion(.success(releases))
         }.resume()
+    }
+
+    private static func candidates(_ releases: [GitHubRelease]) -> [ParquetReleaseSelector.Candidate] {
+        releases.map {
+            ParquetReleaseSelector.Candidate(tag: $0.tag_name, isPreRelease: $0.prerelease ?? false, isDraft: $0.draft ?? false)
+        }
+    }
+
+    private func trustedReleasePage(_ release: GitHubRelease) -> URL? {
+        guard
+            let url = URL(string: release.html_url),
+            updateValidator.isTrustedReleasePageURL(url, expectedTag: release.tag_name)
+        else { return nil }
+        return url
+    }
+
+    // Shown in Updates only on a pre-release build.
+    var isPreReleaseBuild: Bool {
+        ParquetSemVer(looseVersion: currentVersion())?.isPreRelease ?? false
+    }
+
+    // From a beta back to the newest stable release, through the same signed install as updates.
+    // Automatic checks never downgrade; this explicit path also switches the channel to Stable.
+    func downgradeToStable() {
+        setStatus("Looking for the latest stable release…")
+        fetchReleases { [weak self] result in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                let releases: [GitHubRelease]
+                switch result {
+                case .failure(let error):
+                    self.showUpdateErrorDialog(error.message)
+                    return
+                case .success(let list):
+                    releases = list
+                }
+                let current = ParquetSemVer(looseVersion: self.currentVersion()) ?? .zero
+                guard
+                    let index = ParquetReleaseSelector.downgradeTarget(Self.candidates(releases), current: current),
+                    let target = ParquetSemVer(strictTag: releases[index].tag_name),
+                    let releasePage = self.trustedReleasePage(releases[index])
+                else {
+                    self.setStatus("No older stable release to downgrade to.")
+                    self.showUpdateErrorDialog("There is no stable release older than \(self.currentVersion()) to downgrade to. Newer stable releases are offered by Check for Updates.")
+                    return
+                }
+                let package = self.updatePackage(for: releases[index], version: target.normalized)
+
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.icon = NSApp.applicationIconImage
+                alert.messageText = "Downgrade to v\(target.normalized)?"
+                alert.informativeText = "\(self.appDisplayName) \(self.currentVersion()) is replaced by the stable release v\(target.normalized), and the release channel is set to Stable. The Spotlight importer is replaced too."
+                if package != nil {
+                    alert.informativeText += " The download's signature is checked before anything is replaced."
+                    alert.addButton(withTitle: "Downgrade")
+                } else {
+                    alert.informativeText += " This release has no signed download (or the app's folder is not writable), so it has to be installed from the release page."
+                    alert.addButton(withTitle: "Open Release Page")
+                }
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else {
+                    self.setStatus("Downgrade cancelled.")
+                    return
+                }
+                self.updateChannel = .stable
+                if let package {
+                    self.installUpdate(package, releasePage: releasePage, downgrade: true)
+                } else {
+                    NSWorkspace.shared.open(releasePage)
+                }
+            }
+        }
     }
 
     private func showUpdateAvailableDialog(version: String, skippedVersion: String, url: URL, package: UpdatePackage?) {
@@ -469,12 +522,12 @@ private final class AppModel: ObservableObject {
         }
     }
 
-    private func installUpdate(_ package: UpdatePackage, releasePage: URL) {
-        setStatus("Downloading update \(package.version)…")
+    private func installUpdate(_ package: UpdatePackage, releasePage: URL, downgrade: Bool = false) {
+        setStatus("Downloading \(downgrade ? "release" : "update") \(package.version)…")
         Task {
             do {
                 let newApp = try await downloadAndVerifyUpdate(package)
-                await MainActor.run { self.swapInUpdate(newApp, version: package.version) }
+                await MainActor.run { self.swapInUpdate(newApp, version: package.version, downgrade: downgrade) }
             } catch {
                 await MainActor.run {
                     self.setStatus("Update failed: \(error.localizedDescription)", error: true)
@@ -538,7 +591,10 @@ private final class AppModel: ObservableObject {
     // the update's temporary folder (same volume; the system clears it), moves the new app into
     // place and relaunches it. The new app then updates the Spotlight importer on launch
     // (autoInstallOrUpdateImporter).
-    private func swapInUpdate(_ newApp: URL, version: String) {
+    //
+    // A downgrade removes the installed importer first: the older app never replaces a newer
+    // importer, but installs a missing one on launch. If the swap fails, the restored app does too.
+    private func swapInUpdate(_ newApp: URL, version: String, downgrade: Bool = false) {
         let installed = Bundle.main.bundleURL
         let workDir = newApp.deletingLastPathComponent().deletingLastPathComponent()
         let trash = workDir.appendingPathComponent("previous-\(currentVersion()).app")
@@ -555,6 +611,9 @@ private final class AppModel: ObservableObject {
         guard status == 0 else {
             setStatus("Update failed: could not start the installer helper.", error: true)
             return
+        }
+        if downgrade, fm.fileExists(atPath: spotlightDst.path) {
+            try? fm.removeItem(at: spotlightDst)
         }
         setStatus("Installing \(version); the app restarts.")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -1237,6 +1296,14 @@ private struct ContentView: View {
                     .foregroundStyle(.secondary)
                 Button("Check for Updates Now") {
                     model.checkForUpdates(manual: true)
+                }
+                if model.isPreReleaseBuild {
+                    Button("Downgrade to Stable…") {
+                        model.downgradeToStable()
+                    }
+                    Text("Installs the newest stable release (signed download) and switches the channel to Stable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

@@ -1,5 +1,11 @@
 # News
 
+## 0.7.1-beta.1 - 2026-10-24 (pre-release)
+
+### Changes
+
+- `Updates` → `Downgrade to Stable…` (shown on beta builds) goes back to the newest stable release: signed download, channel set to Stable, Spotlight importer replaced.
+
 ## 0.7.0-beta.1 - 2026-10-24 (pre-release)
 
 ### Changes

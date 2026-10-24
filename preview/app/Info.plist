@@ -19,11 +19,11 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.7.0</string>
+  <string>0.7.1</string>
   <key>ParquetReleaseVersion</key>
-  <string>0.7.0-beta.1</string>
+  <string>0.7.1-beta.1</string>
   <key>CFBundleVersion</key>
-  <string>13</string>
+  <string>14</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSPrincipalClass</key>

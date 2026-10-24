@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.1-beta.1 - 2026-10-24 (pre-release)
+
+- Bumped importer, app, and extension versions to `0.7.1` (build 14); the app's `ParquetReleaseVersion` is `0.7.1-beta.1`.
+- `Downgrade to Stable…` in Updates on pre-release builds (#31): installs the newest stable release older than the running beta (`ParquetReleaseSelector.downgradeTarget`) through the signed update flow, sets the channel to Stable, and removes the installed Spotlight importer before the swap so the older app installs its own on launch. Without a signed download it opens the release page. The release-list request moved into `fetchReleases`, shared by update checks and the downgrade.
+
 ## 0.7.0-beta.1 - 2026-10-24 (pre-release)
 
 - Bumped importer, app, and extension versions to `0.7.0` (build 13); the app's `ParquetReleaseVersion` is `0.7.0-beta.1`.

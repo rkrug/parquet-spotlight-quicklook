@@ -106,6 +106,15 @@ public enum ParquetReleaseSelector {
         }
         return best?.index
     }
+
+    // Explicit downgrade from a pre-release build: the newest stable release when it is older
+    // than `current`. nil on stable builds, and when a newer stable exists (a normal update).
+    public static func downgradeTarget(_ candidates: [Candidate], current: ParquetSemVer) -> Int? {
+        guard current.isPreRelease, let index = newest(candidates, channel: .stable),
+              let version = ParquetSemVer(strictTag: candidates[index].tag), version < current
+        else { return nil }
+        return index
+    }
 }
 
 // Decides whether the importer bundled in the app should replace the installed one in

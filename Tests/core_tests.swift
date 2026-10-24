@@ -80,6 +80,11 @@ func runCoreTests() {
     let withFinal = releases + [C(tag: "v0.7.0", isPreRelease: false, isDraft: false)]
     assertEqual(ParquetReleaseSelector.newest(withFinal, channel: .beta), 6, "beta: final release beats its betas")
     assertTrue(ParquetReleaseSelector.newest([], channel: .beta) == nil, "no releases")
+    let beta1 = ParquetSemVer(looseVersion: "0.7.0-beta.1")!
+    assertEqual(ParquetReleaseSelector.downgradeTarget(releases, current: beta1), 3, "downgrade: newest stable (v0.6.0), never a pre-release")
+    assertTrue(ParquetReleaseSelector.downgradeTarget(releases, current: ParquetSemVer(looseVersion: "0.6.0")!) == nil, "downgrade: not from a stable build")
+    assertTrue(ParquetReleaseSelector.downgradeTarget(withFinal, current: beta1) == nil, "downgrade: newer stable is an update, not a downgrade")
+    assertTrue(ParquetReleaseSelector.downgradeTarget([releases[0]], current: beta1) == nil, "downgrade: no stable release")
     assertTrue(
         validator.isTrustedReleasePageURL(URL(string: "https://github.com/rkrug/parquet-spotlight-quicklook/releases/tag/v0.4.0")!, expectedTag: "v0.4.0"),
         "trusted release page should pass"
