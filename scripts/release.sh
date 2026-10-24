@@ -6,9 +6,9 @@ usage() {
 Usage: ./scripts/release.sh <tag> [--notes <file>] [--skip-gh]
 
 Examples:
-  ./scripts/release.sh v0.7.0
-  ./scripts/release.sh v0.7.0 --notes /tmp/release-notes.md
-  ./scripts/release.sh v0.7.0 --skip-gh
+  ./scripts/release.sh v0.7.1
+  ./scripts/release.sh v0.7.1 --notes /tmp/release-notes.md
+  ./scripts/release.sh v0.7.1 --skip-gh
   ./scripts/release.sh v0.8.0-beta.1          # pre-release (beta channel), from dev or main
 
 Behavior:
