@@ -12,5 +12,6 @@
     <attribute name="com_rkrug_parquet_row_count" type="CFNumber"/>
     <attribute name="com_rkrug_parquet_column_count" type="CFNumber"/>
     <attribute name="com_rkrug_parquet_columns" multivalued="true" type="CFString"/>
+    <attribute name="com_rkrug_parquet_partitions" multivalued="true" type="CFString"/>
   </attributes>
 </schema>

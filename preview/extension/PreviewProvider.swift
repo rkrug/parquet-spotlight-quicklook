@@ -236,20 +236,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         guard parentPath.hasPrefix(basePath) else {
             return
         }
-        let relative = String(parentPath.dropFirst(basePath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if relative.isEmpty {
-            return
-        }
-        for segment in relative.split(separator: "/").map(String.init) {
-            guard let eq = segment.firstIndex(of: "=") else {
-                continue
-            }
-            let key = String(segment[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let value = String(segment[segment.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty, !value.isEmpty else {
-                continue
-            }
-            visit(key, value)
+        let relative = String(parentPath.dropFirst(basePath.count))
+        for partition in ParquetFooter.partitions(inDirectoryPath: relative) {
+            visit(partition.key, partition.value)
         }
     }
 

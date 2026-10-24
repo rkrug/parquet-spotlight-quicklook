@@ -31,3 +31,12 @@ public func parquetReadSummary(
 
     return summary.valid ? 1 : 0
 }
+
+// Hive partitions in the file's directory path as a +1 retained CFArray of "key=value"
+// strings (outermost first), or NULL when there are none. Only the path is used.
+@_cdecl("parquet_read_partitions")
+public func parquetReadPartitions(_ path: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
+    let directory = (String(cString: path) as NSString).deletingLastPathComponent
+    let partitions = ParquetFooter.partitions(inDirectoryPath: directory).map { "\($0.key)=\($0.value)" }
+    return partitions.isEmpty ? nil : Unmanaged.passRetained(partitions as CFArray).toOpaque()
+}

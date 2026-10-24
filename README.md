@@ -281,6 +281,8 @@ mdfind 'com_rkrug_parquet_row_count > 1000000'
 mdfind 'com_rkrug_parquet_column_count > 100'
 mdfind 'com_rkrug_parquet_columns == "species"'
 mdfind 'kMDItemKeywords == "col-species"'
+mdfind 'com_rkrug_parquet_partitions == "year=2024"'
+mdfind 'kMDItemKeywords == "part-year-2024"'
 ```
 
 ## Troubleshooting
@@ -357,6 +359,7 @@ Custom Parquet fields:
 - `com_rkrug_parquet_row_count` (`CFNumber`)
 - `com_rkrug_parquet_column_count` (`CFNumber`)
 - `com_rkrug_parquet_columns` (`CFString`, multivalued)
+- `com_rkrug_parquet_partitions` (`CFString`, multivalued)
 
 ## Queryable `mdfind` Properties
 
@@ -384,6 +387,10 @@ Custom Parquet fields:
   - Leaf column paths parsed from the footer schema (nested fields joined with `.`, e.g. `point.x`, `tags.list.element`).
   - Example: `mdfind 'com_rkrug_parquet_columns == "Species"'`
 
+- `com_rkrug_parquet_partitions` (`CFString`, multivalued):
+  - Hive-style partitions from the file's folder path (`key=value` folder names, outermost first, values percent-decoded), e.g. `year=2024` for `.../year=2024/region=EU/part-0.parquet`. Taken from the path only; row data is never read.
+  - Example: `mdfind 'com_rkrug_parquet_partitions == "year=2024"'`
+
 - `kMDItemKeywords` (`CFString`, multivalued):
   - Includes generated tokens such as `col-<column_name>`, `parquet-valid`, `parquet-footer-<N>`.
   - Example: `mdfind 'kMDItemKeywords == "col-species"'`
@@ -397,6 +404,7 @@ Keyword tokens written by importer:
 - `parquet-rows-<N>`
 - `parquet-cols-<N>`
 - `col-<column_name>`
+- `part-<key>-<value>` (hive partitions, e.g. `part-year-2024`)
 
 ## Notes
 

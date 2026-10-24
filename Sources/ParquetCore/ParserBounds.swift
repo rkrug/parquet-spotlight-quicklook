@@ -6,6 +6,7 @@ import Foundation
 public enum ParquetParserBounds {
     public static let maxDepth = 100
     public static let maxIndexedColumns = 4096
+    public static let maxPartitionSegments = 32
     public static let maxFooterLength = 16 * 1024 * 1024
 
     // Every encoded element occupies at least one byte, so a declared count

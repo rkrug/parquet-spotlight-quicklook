@@ -85,6 +85,28 @@ public enum ParquetFooter {
         }
     }
 
+    // Hive-style partitions (`key=value` directory names) in a directory path, outermost first.
+    // Values are percent-decoded, as writers such as Arrow encode them.
+    public static func partitions(inDirectoryPath path: String) -> [(key: String, value: String)] {
+        var out: [(key: String, value: String)] = []
+        for segment in path.split(separator: "/") {
+            guard let eq = segment.firstIndex(of: "=") else {
+                continue
+            }
+            let key = String(segment[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = String(segment[segment.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = raw.removingPercentEncoding ?? raw
+            guard !key.isEmpty, !value.isEmpty else {
+                continue
+            }
+            out.append((key, value))
+            if out.count >= ParquetParserBounds.maxPartitionSegments {
+                break
+            }
+        }
+        return out
+    }
+
     private struct SchemaElement {
         let name: String
         let type: Int32?

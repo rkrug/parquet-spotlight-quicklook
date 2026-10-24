@@ -40,6 +40,7 @@ static CFStringRef kParquetIsValidKey = CFSTR("com_rkrug_parquet_is_valid");
 static CFStringRef kParquetRowCountKey = CFSTR("com_rkrug_parquet_row_count");
 static CFStringRef kParquetColumnCountKey = CFSTR("com_rkrug_parquet_column_count");
 static CFStringRef kParquetColumnsKey = CFSTR("com_rkrug_parquet_columns");
+static CFStringRef kParquetPartitionsKey = CFSTR("com_rkrug_parquet_partitions");
 
 static void set_int64_attribute(CFMutableDictionaryRef attributes, CFStringRef key, int64_t value) {
     CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &value);
@@ -94,23 +95,20 @@ static void add_metadata_keywords(CFMutableDictionaryRef attributes,
     }
 }
 
-static CFArrayRef build_column_keywords(CFArrayRef columns) {
-    if (columns == NULL) {
-        return NULL;
+// Appends "<prefix><value>" keywords, lowercased with ' ' and '.' -> '_' and '=' -> '-'
+// (columns: col-point_x, partitions: part-year-2024).
+static void append_keywords(CFMutableArrayRef keywords, CFArrayRef values, CFStringRef prefix) {
+    if (keywords == NULL || values == NULL) {
+        return;
     }
 
-    CFMutableArrayRef colKeywords = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
-    if (colKeywords == NULL) {
-        return NULL;
-    }
-
-    CFIndex count = CFArrayGetCount(columns);
+    CFIndex count = CFArrayGetCount(values);
     for (CFIndex i = 0; i < count; i++) {
-        CFStringRef col = (CFStringRef)CFArrayGetValueAtIndex(columns, i);
-        if (col == NULL) {
+        CFStringRef value = (CFStringRef)CFArrayGetValueAtIndex(values, i);
+        if (value == NULL) {
             continue;
         }
-        CFMutableStringRef normalized = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, col);
+        CFMutableStringRef normalized = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, value);
         if (normalized == NULL) {
             continue;
         }
@@ -118,16 +116,15 @@ static CFArrayRef build_column_keywords(CFArrayRef columns) {
         CFStringLowercase(normalized, NULL);
         CFStringFindAndReplace(normalized, CFSTR(" "), CFSTR("_"), CFRangeMake(0, CFStringGetLength(normalized)), 0);
         CFStringFindAndReplace(normalized, CFSTR("."), CFSTR("_"), CFRangeMake(0, CFStringGetLength(normalized)), 0);
+        CFStringFindAndReplace(normalized, CFSTR("="), CFSTR("-"), CFRangeMake(0, CFStringGetLength(normalized)), 0);
 
-        CFStringRef token = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("col-%@"), normalized);
+        CFStringRef token = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%@%@"), prefix, normalized);
         CFRelease(normalized);
         if (token != NULL) {
-            CFArrayAppendValue(colKeywords, token);
+            CFArrayAppendValue(keywords, token);
             CFRelease(token);
         }
     }
-
-    return colKeywords;
 }
 
 void *MetadataImporterPluginFactory(CFAllocatorRef allocator, CFUUIDRef typeID) {
@@ -229,13 +226,18 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
     void *columnsRef = NULL;
     if (parquet_read_summary(path, &fileSize, &footerLen, &rowCount, &columnsRef) == 1) {
         CFArrayRef columns = (CFArrayRef)columnsRef;
-        CFArrayRef columnKeywords = NULL;
+        CFArrayRef partitions = (CFArrayRef)parquet_read_partitions(path);
+        CFMutableArrayRef extraKeywords = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
         int64_t columnCount = 0;
 
         if (columns != NULL && CFArrayGetCount(columns) > 0) {
             columnCount = (int64_t)CFArrayGetCount(columns);
             CFDictionarySetValue(attributes, kParquetColumnsKey, columns);
-            columnKeywords = build_column_keywords(columns);
+            append_keywords(extraKeywords, columns, CFSTR("col-"));
+        }
+        if (partitions != NULL) {
+            CFDictionarySetValue(attributes, kParquetPartitionsKey, partitions);
+            append_keywords(extraKeywords, partitions, CFSTR("part-"));
         }
 
         set_int64_attribute(attributes, kParquetFileSizeKey, (int64_t)fileSize);
@@ -256,7 +258,7 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
             CFRelease(description);
         }
 
-        add_metadata_keywords(attributes, fileSize, footerLen, rowCount, columnCount, columnKeywords);
+        add_metadata_keywords(attributes, fileSize, footerLen, rowCount, columnCount, extraKeywords);
 
         CFStringRef tokenized = CFStringCreateWithFormat(
             kCFAllocatorDefault,
@@ -267,31 +269,32 @@ Boolean GetMetadataForFile(__unused void *thisInterface,
             rowCount,
             columnCount);
         if (tokenized != NULL) {
-            if (columns != NULL && CFArrayGetCount(columns) > 0) {
-                CFMutableStringRef enriched = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, tokenized);
-                if (enriched != NULL) {
-                    CFIndex colCount = CFArrayGetCount(columns);
-                    CFIndex maxCols = colCount > 32 ? 32 : colCount;
-                    for (CFIndex i = 0; i < maxCols; i++) {
-                        CFStringRef col = (CFStringRef)CFArrayGetValueAtIndex(columns, i);
-                        if (col != NULL) {
-                            CFStringAppend(enriched, CFSTR(" col "));
-                            CFStringAppend(enriched, col);
-                        }
-                    }
-                    CFDictionarySetValue(attributes, kMDItemTextContent, enriched);
-                    CFRelease(enriched);
-                } else {
-                    CFDictionarySetValue(attributes, kMDItemTextContent, tokenized);
+            CFMutableStringRef enriched = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, tokenized);
+            if (enriched != NULL) {
+                CFIndex colCount = columns != NULL ? CFArrayGetCount(columns) : 0;
+                CFIndex maxCols = colCount > 32 ? 32 : colCount;
+                for (CFIndex i = 0; i < maxCols; i++) {
+                    CFStringAppend(enriched, CFSTR(" col "));
+                    CFStringAppend(enriched, (CFStringRef)CFArrayGetValueAtIndex(columns, i));
                 }
+                CFIndex partCount = partitions != NULL ? CFArrayGetCount(partitions) : 0;
+                for (CFIndex i = 0; i < partCount; i++) {
+                    CFStringAppend(enriched, CFSTR(" partition "));
+                    CFStringAppend(enriched, (CFStringRef)CFArrayGetValueAtIndex(partitions, i));
+                }
+                CFDictionarySetValue(attributes, kMDItemTextContent, enriched);
+                CFRelease(enriched);
             } else {
                 CFDictionarySetValue(attributes, kMDItemTextContent, tokenized);
             }
             CFRelease(tokenized);
         }
 
-        if (columnKeywords != NULL) {
-            CFRelease(columnKeywords);
+        if (extraKeywords != NULL) {
+            CFRelease(extraKeywords);
+        }
+        if (partitions != NULL) {
+            CFRelease(partitions);
         }
         if (columns != NULL) {
             CFRelease(columns);

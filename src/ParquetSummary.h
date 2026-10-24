@@ -12,4 +12,8 @@ int32_t parquet_read_summary(const char *path,
                              int64_t *row_count,
                              void **columns);
 
+// Hive partitions (`key=value` directories) in the file's path: a +1 retained CFArrayRef of
+// "key=value" CFStrings, outermost first, or NULL; the caller releases it.
+void *parquet_read_partitions(const char *path);
+
 #endif

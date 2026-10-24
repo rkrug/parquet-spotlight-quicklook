@@ -10,6 +10,7 @@
 
 ### Changes
 
+- Spotlight now indexes hive partitions (`key=value` folders), e.g. `mdfind 'com_rkrug_parquet_partitions == "year=2024"'`.
 - Minimum macOS is now 13.0 (Ventura).
 - The manager app shows its version in the sidebar.
 - Updated Gatekeeper instructions for macOS 15 and later.

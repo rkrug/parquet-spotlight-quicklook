@@ -91,6 +91,15 @@ int main(int argc, char **argv) {
     }
     fclose(expected);
 
+    // Partitions are read from the path only, so the file does not need to exist.
+    void *partsRef = parquet_read_partitions("/data/ds/year=2024/region=EU%20West/part-0.parquet");
+    join_columns((CFArrayRef)partsRef, joined, sizeof(joined));
+    check(strcmp(joined, "year=2024,region=EU West") == 0, "partitions", "key=value list");
+    if (partsRef != NULL) {
+        CFRelease((CFArrayRef)partsRef);
+    }
+    check(parquet_read_partitions("/data/ds/part-0.parquet") == NULL, "partitions", "none without key=value folders");
+
     if (checked < 6) {
         fprintf(stderr, "FAIL: expected at least 6 fixtures, checked %d\n", checked);
         return 1;

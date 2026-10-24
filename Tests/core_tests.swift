@@ -178,6 +178,14 @@ func runFooterFixtureTests(fixturesDir: String) {
         "flat.parquet: logical types"
     )
 
+    // Hive partitions come from key=value directory names only.
+    let parts = ParquetFooter.partitions(inDirectoryPath: "/data/ds/year=2024/region=EU%20West/plain/=x/k=/note=a=b")
+    assertEqual(parts.map(\.key), ["year", "region", "note"], "partition keys")
+    assertEqual(parts.map(\.value), ["2024", "EU West", "a=b"], "partition values (percent-decoded, first '=' splits)")
+    assertTrue(ParquetFooter.partitions(inDirectoryPath: "/data/ds").isEmpty, "no partitions without key=value segments")
+    let many = (1...100).map { "k\($0)=v" }.joined(separator: "/")
+    assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
+
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
