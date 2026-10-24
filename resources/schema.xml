@@ -14,5 +14,8 @@
     <attribute name="com_rkrug_parquet_columns" multivalued="true" type="CFString"/>
     <attribute name="com_rkrug_parquet_column_types" multivalued="true" type="CFString"/>
     <attribute name="com_rkrug_parquet_partitions" multivalued="true" type="CFString"/>
+    <attribute name="com_rkrug_parquet_metadata_keys" multivalued="true" type="CFString"/>
+    <attribute name="com_rkrug_parquet_date_min" type="CFDate"/>
+    <attribute name="com_rkrug_parquet_date_max" type="CFDate"/>
   </attributes>
 </schema>

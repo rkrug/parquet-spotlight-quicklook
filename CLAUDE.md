@@ -26,7 +26,7 @@ The core tests include a seeded footer-corruption fuzz pass; replay or widen it 
 
 Three artifacts, all produced by `scripts/build.sh`:
 
-- **`build/Parquet.mdimporter`** — `src/MetadataImporter.c` (thin C CFPlugIn shell) calling `parquet_read_summary` from `src/ImporterBridge.swift`, linked as a bundle against `/usr/lib/swift`; plus `plist/Info.plist` + `resources/schema.xml`. Declares UTI `com.rkrug.parquet` and the custom `com_rkrug_parquet_*` attributes; keep `schema.xml` and the attribute writes in the C file in sync, and README's "Exposed Properties" lists them.
+- **`build/Parquet.mdimporter`** — `src/MetadataImporter.c` (thin C CFPlugIn shell) copying the attribute dictionary built by `parquet_copy_attributes` in `src/ImporterBridge.swift` (all Spotlight attributes, keywords and text content are set there), linked as a bundle against `/usr/lib/swift`; plus `plist/Info.plist` + `resources/schema.xml`. Imports UTI `com.rkrug.parquet` and declares the custom `com_rkrug_parquet_*` attributes; keep `schema.xml` and the attribute names in `ImporterBridge.swift` in sync, and README's "Exposed Properties" lists them.
 - **`Parquet Quick Look and Index.app`** — GUI manager (`preview/app/AppMain.swift`): install/repair/uninstall, settings, update checks, diagnostics. Embeds the importer payload and the appex.
 - **`ParquetQuickLook.appex`** — modern Quick Look preview extension (`preview/extension/PreviewProvider.swift`, plus `NSExtensionMain.m` entry). Renders schema tree, dataset-folder summaries, and Arrow schema JSON export.
 

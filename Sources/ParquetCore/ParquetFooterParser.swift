@@ -8,12 +8,32 @@ public enum ParquetFooter {
         public let name: String
         public let logicalType: String
         public let physicalType: String
+        // Column-chunk metadata summed over all row groups (codec names in first-seen order).
+        public var codecs: [String] = []
+        public var compressedSize: Int64 = 0
+        public var uncompressedSize: Int64 = 0
+        // Range of date/timestamp columns from the chunk statistics, read as UTC.
+        public var minDate: Date?
+        public var maxDate: Date?
 
         public init(name: String, logicalType: String, physicalType: String) {
             self.name = name
             self.logicalType = logicalType
             self.physicalType = physicalType
         }
+    }
+
+    public struct RowGroup: Equatable {
+        public var rows: Int64 = 0
+        public var totalByteSize: Int64 = 0
+        public var compressedSize: Int64 = 0
+    }
+
+    public struct KeyValue: Equatable {
+        public let key: String
+        // Cut to maxMetadataValueBytes; valueLength is the full length in bytes.
+        public let value: String?
+        public let valueLength: Int
     }
 
     public struct Summary {
@@ -23,8 +43,21 @@ public enum ParquetFooter {
         public var footerLength: UInt32 = 0
         public var rowCount: Int64 = 0
         public var columns: [Column] = []
+        public var createdBy: String?
+        public var keyValueMetadata: [KeyValue] = []
+        public var rowGroupCount = 0
+        // The first maxListedRowGroups row groups.
+        public var rowGroups: [RowGroup] = []
 
         public init() {}
+
+        // Overall range across all date/timestamp columns.
+        public var dateRange: (min: Date, max: Date)? {
+            let mins = columns.compactMap(\.minDate)
+            let maxs = columns.compactMap(\.maxDate)
+            guard let lo = mins.min(), let hi = maxs.max() else { return nil }
+            return (lo, hi)
+        }
     }
 
     public static func read(at url: URL) -> Summary {
@@ -65,23 +98,23 @@ public enum ParquetFooter {
             let footer = try fh.read(upToCount: Int(footerLen)) ?? Data()
             guard footer.count == Int(footerLen) else { return out }
 
-            let parsed = parse(footer: footer)
-            out.rowCount = parsed.rowCount
-            out.columns = parsed.columns
-            out.valid = true
-            return out
+            var parsed = parse(footer: footer)
+            parsed.fileSize = out.fileSize
+            parsed.footerLength = out.footerLength
+            parsed.valid = true
+            return parsed
         } catch {
             return out
         }
     }
 
-    // Malformed footers yield no rows and no columns.
-    public static func parse(footer: Data) -> (rowCount: Int64, columns: [Column]) {
+    // Malformed footers yield an empty summary (no rows, no columns); `valid` is left to read(at:).
+    public static func parse(footer: Data) -> Summary {
         do {
             var parser = CompactParser(data: footer)
             return try parseFileMetadata(parser: &parser)
         } catch {
-            return (0, [])
+            return Summary()
         }
     }
 
@@ -310,9 +343,10 @@ public enum ParquetFooter {
         }
     }
 
-    private static func parseFileMetadata(parser: inout CompactParser) throws -> (rowCount: Int64, columns: [Column]) {
+    // FileMetaData: 2 schema, 3 num_rows, 4 row_groups, 5 key_value_metadata, 6 created_by.
+    private static func parseFileMetadata(parser: inout CompactParser) throws -> Summary {
         var lastFieldID: Int16 = 0
-        var schema: [SchemaElement] = []
+        var out = Summary()
         var fileRowCount: Int64 = 0
         var rowGroupSum: Int64 = 0
         var haveFileRowCount = false
@@ -320,21 +354,60 @@ public enum ParquetFooter {
         while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
             switch fieldID {
             case 2:
-                schema = try parseSchemaList(parser: &parser, fieldType: fieldType)
+                out.columns = leafColumns(from: try parseSchemaList(parser: &parser, fieldType: fieldType))
             case 3:
                 fileRowCount = try parser.readInt64ForType(fieldType)
                 if fileRowCount < 0 { fileRowCount = 0 }
                 haveFileRowCount = true
             case 4:
-                rowGroupSum = try parseRowGroups(parser: &parser, fieldType: fieldType)
+                // Writers put the schema first; chunk details need it to map chunks to columns.
+                rowGroupSum = try parseRowGroups(parser: &parser, fieldType: fieldType, into: &out)
+            case 5:
+                out.keyValueMetadata = try parseKeyValueList(parser: &parser, fieldType: fieldType)
+            case 6 where fieldType == CompactType.binary.rawValue:
+                out.createdBy = String(decoding: try parser.readBinaryData().prefix(ParquetParserBounds.maxMetadataValueBytes), as: UTF8.self)
             default:
                 try parser.skipValue(type: fieldType)
             }
         }
 
-        let rowCount = haveFileRowCount ? fileRowCount : max(0, rowGroupSum)
-        let columns = leafColumns(from: schema)
-        return (rowCount, columns)
+        out.rowCount = haveFileRowCount ? fileRowCount : max(0, rowGroupSum)
+        return out
+    }
+
+    private static func parseKeyValueList(parser: inout CompactParser, fieldType: UInt8) throws -> [KeyValue] {
+        guard fieldType == CompactType.list.rawValue else {
+            try parser.skipValue(type: fieldType)
+            return []
+        }
+        let (elementType, declaredSize) = try parser.readListHeader()
+        var out: [KeyValue] = []
+        for _ in 0..<parser.boundedCount(declaredSize) {
+            guard elementType == CompactType.struct.rawValue, out.count < ParquetParserBounds.maxMetadataEntries else {
+                try parser.skipValue(type: elementType)
+                continue
+            }
+            var lastFieldID: Int16 = 0
+            var key: String?
+            var value: String?
+            var valueLength = 0
+            while let (fieldID, nestedType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+                switch (fieldID, nestedType) {
+                case (1, CompactType.binary.rawValue):
+                    key = String(decoding: try parser.readBinaryData().prefix(ParquetParserBounds.maxMetadataValueBytes), as: UTF8.self)
+                case (2, CompactType.binary.rawValue):
+                    let data = try parser.readBinaryData()
+                    valueLength = data.count
+                    value = String(decoding: data.prefix(ParquetParserBounds.maxMetadataValueBytes), as: UTF8.self)
+                default:
+                    try parser.skipValue(type: nestedType)
+                }
+            }
+            if let key {
+                out.append(KeyValue(key: key, value: value, valueLength: valueLength))
+            }
+        }
+        return out
     }
 
     private static func parseSchemaList(parser: inout CompactParser, fieldType: UInt8) throws -> [SchemaElement] {
@@ -577,7 +650,7 @@ public enum ParquetFooter {
         return unit
     }
 
-    private static func parseRowGroups(parser: inout CompactParser, fieldType: UInt8) throws -> Int64 {
+    private static func parseRowGroups(parser: inout CompactParser, fieldType: UInt8, into out: inout Summary) throws -> Int64 {
         guard fieldType == CompactType.list.rawValue else {
             try parser.skipValue(type: fieldType)
             return 0
@@ -594,25 +667,177 @@ public enum ParquetFooter {
 
         var total: Int64 = 0
         for _ in 0..<size {
-            let rows = try parseRowGroup(parser: &parser)
-            total = ParquetParserBounds.saturatingAdd(total, rows)
+            let group = try parseRowGroup(parser: &parser, columns: &out.columns)
+            total = ParquetParserBounds.saturatingAdd(total, group.rows)
+            out.rowGroupCount += 1
+            if out.rowGroups.count < ParquetParserBounds.maxListedRowGroups {
+                out.rowGroups.append(group)
+            }
         }
         return max(0, total)
     }
 
-    private static func parseRowGroup(parser: inout CompactParser) throws -> Int64 {
+    // RowGroup: 1 columns, 2 total_byte_size, 3 num_rows, 6 total_compressed_size (optional).
+    private static func parseRowGroup(parser: inout CompactParser, columns: inout [Column]) throws -> RowGroup {
         var lastFieldID: Int16 = 0
-        var rows: Int64 = 0
+        var group = RowGroup()
+        var chunkCompressed: Int64 = 0
+        var haveCompressed = false
 
         while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
-            if fieldID == 3 {
-                rows = max(0, try parser.readInt64ForType(fieldType))
-            } else {
+            switch fieldID {
+            case 1 where fieldType == CompactType.list.rawValue:
+                let (elementType, declaredSize) = try parser.readListHeader()
+                for index in 0..<parser.boundedCount(declaredSize) {
+                    guard elementType == CompactType.struct.rawValue else {
+                        try parser.skipValue(type: elementType)
+                        continue
+                    }
+                    // Chunks follow the schema's leaf-column order.
+                    let chunk = try parseColumnChunk(parser: &parser)
+                    chunkCompressed = ParquetParserBounds.saturatingAdd(chunkCompressed, chunk.compressed)
+                    if index < columns.count {
+                        apply(chunk, to: &columns[index])
+                    }
+                }
+            case 2:
+                group.totalByteSize = max(0, try parser.readInt64ForType(fieldType))
+            case 3:
+                group.rows = max(0, try parser.readInt64ForType(fieldType))
+            case 6:
+                group.compressedSize = max(0, try parser.readInt64ForType(fieldType))
+                haveCompressed = true
+            default:
                 try parser.skipValue(type: fieldType)
             }
         }
 
-        return rows
+        if !haveCompressed { group.compressedSize = chunkCompressed }
+        return group
+    }
+
+    private struct ColumnChunkInfo {
+        var codec: Int64?
+        var compressed: Int64 = 0
+        var uncompressed: Int64 = 0
+        // Raw statistics; only values up to 8 bytes are kept (enough for dates and timestamps).
+        var minValue: Data?
+        var maxValue: Data?
+        var legacyMin: Data?
+        var legacyMax: Data?
+    }
+
+    // ColumnChunk: 3 meta_data. ColumnMetaData: 4 codec, 6 total_uncompressed_size,
+    // 7 total_compressed_size, 12 statistics.
+    private static func parseColumnChunk(parser: inout CompactParser) throws -> ColumnChunkInfo {
+        var info = ColumnChunkInfo()
+        var lastFieldID: Int16 = 0
+        while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            guard fieldID == 3, fieldType == CompactType.struct.rawValue else {
+                try parser.skipValue(type: fieldType)
+                continue
+            }
+            var metaFieldID: Int16 = 0
+            while let (metaID, metaType) = try parser.readFieldHeader(lastFieldID: &metaFieldID) {
+                switch metaID {
+                case 4:
+                    info.codec = try parser.readInt64ForType(metaType)
+                case 6:
+                    info.uncompressed = max(0, try parser.readInt64ForType(metaType))
+                case 7:
+                    info.compressed = max(0, try parser.readInt64ForType(metaType))
+                case 12 where metaType == CompactType.struct.rawValue:
+                    try parseStatistics(parser: &parser, into: &info)
+                default:
+                    try parser.skipValue(type: metaType)
+                }
+            }
+        }
+        return info
+    }
+
+    // Statistics: 1 max / 2 min (legacy), 5 max_value / 6 min_value.
+    private static func parseStatistics(parser: inout CompactParser, into info: inout ColumnChunkInfo) throws {
+        var lastFieldID: Int16 = 0
+        while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
+            guard [1, 2, 5, 6].contains(fieldID), fieldType == CompactType.binary.rawValue else {
+                try parser.skipValue(type: fieldType)
+                continue
+            }
+            let data = try parser.readBinaryData()
+            guard data.count <= 8 else { continue }
+            switch fieldID {
+            case 1: info.legacyMax = data
+            case 2: info.legacyMin = data
+            case 5: info.maxValue = data
+            default: info.minValue = data
+            }
+        }
+    }
+
+    private static func apply(_ chunk: ColumnChunkInfo, to column: inout Column) {
+        if let codec = chunk.codec {
+            let name = codecName(codec)
+            if !column.codecs.contains(name) { column.codecs.append(name) }
+        }
+        column.compressedSize = ParquetParserBounds.saturatingAdd(column.compressedSize, chunk.compressed)
+        column.uncompressedSize = ParquetParserBounds.saturatingAdd(column.uncompressedSize, chunk.uncompressed)
+
+        // Legacy min/max sort signed integers correctly, which is all dates and timestamps need.
+        if let lo = date(fromStatistic: chunk.minValue ?? chunk.legacyMin, column: column) {
+            column.minDate = column.minDate.map { min($0, lo) } ?? lo
+        }
+        if let hi = date(fromStatistic: chunk.maxValue ?? chunk.legacyMax, column: column) {
+            column.maxDate = column.maxDate.map { max($0, hi) } ?? hi
+        }
+    }
+
+    // date32 is INT32 days, timestamps are INT64 in the column's unit; both little-endian.
+    // ponytail: timestamps without isAdjustedToUTC are read as UTC too.
+    private static func date(fromStatistic data: Data?, column: Column) -> Date? {
+        guard let data else { return nil }
+        let bytes = [UInt8](data)
+        func littleEndian(_ count: Int) -> Int64? {
+            guard bytes.count == count else { return nil }
+            var value: UInt64 = 0
+            for (i, b) in bytes.enumerated() { value |= UInt64(b) << (8 * UInt64(i)) }
+            return count == 4 ? Int64(Int32(truncatingIfNeeded: value)) : Int64(bitPattern: value)
+        }
+
+        let seconds: Double
+        switch (column.physicalType, column.logicalType) {
+        case ("INT32", "date32[day]"):
+            guard let days = littleEndian(4) else { return nil }
+            seconds = Double(days) * 86_400
+        case ("INT64", "timestamp[ms]"):
+            guard let v = littleEndian(8) else { return nil }
+            seconds = Double(v) / 1_000
+        case ("INT64", "timestamp[us]"):
+            guard let v = littleEndian(8) else { return nil }
+            seconds = Double(v) / 1_000_000
+        case ("INT64", "timestamp[ns]"):
+            guard let v = littleEndian(8) else { return nil }
+            seconds = Double(v) / 1_000_000_000
+        default:
+            return nil
+        }
+        // Years 1...9999; anything else is a corrupt or sentinel value.
+        guard seconds >= -62_135_596_800, seconds <= 253_402_300_799 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    private static func codecName(_ codec: Int64) -> String {
+        switch codec {
+        case 0: return "UNCOMPRESSED"
+        case 1: return "SNAPPY"
+        case 2: return "GZIP"
+        case 3: return "LZO"
+        case 4: return "BROTLI"
+        case 5: return "LZ4"
+        case 6: return "ZSTD"
+        case 7: return "LZ4_RAW"
+        default: return "CODEC_\(codec)"
+        }
     }
 
     private static func leafColumns(from schema: [SchemaElement]) -> [Column] {

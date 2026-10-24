@@ -5,6 +5,9 @@
 ### Changes
 
 - `.parquet` files are now a registered file type ("Apache Parquet File"), and folders named `*.parquet_ds` are recognised as "Parquet Database".
+- Spotlight finds files by the date range of their data, from the footer statistics: e.g. files with data from 2024: `mdfind 'com_rkrug_parquet_date_max >= $time.iso(2024-01-01) && com_rkrug_parquet_date_min < $time.iso(2025-01-01)'`.
+- Spotlight indexes the writer (`kMDItemCreator`, e.g. DuckDB, Spark, Arrow) and the names of the footer's key/value metadata.
+- Quick Look shows footer details: writer, row groups, compression per column, date range and key/value metadata.
 - Spotlight indexes column types, e.g. `mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'`.
 
 ## 0.6.0 - 2026-10-24
