@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.6.0 - 2026-10-24
 
+- Bumped importer, app, and extension versions to `0.6.0`.
 - In-app updates: `Install Update` in the update dialog downloads the release ZIP, verifies an Ed25519 signature (CryptoKit; public key `ParquetUpdatePublicKey` in the app's Info.plist), checks bundle ID, version and code signature, then swaps the app via a helper after quit and relaunches. Falls back to the release page when the release is unsigned, the app folder is not writable, or a check fails.
 - Release workflow signs the ZIP with the `PARQUET_UPDATE_SIGNING_KEY` secret (`scripts/sign_update.swift`) and uploads `<zip>.sig`; without the secret it warns and publishes unsigned.
 

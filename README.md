@@ -67,15 +67,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.5.1
+./scripts/release.sh v0.6.0
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.5.1.dmg`
-- creates `release/Parquet-Spotlight-0.5.1.zip`
-- creates `release/Parquet-Spotlight-0.5.1.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.6.0.dmg`
+- creates `release/Parquet-Spotlight-0.6.0.zip`
+- creates `release/Parquet-Spotlight-0.6.0.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
@@ -112,7 +112,7 @@ xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 
 ## Update
 
-### In-app (next release after 0.5.1 onwards)
+### In-app (0.6.0 onwards)
 
 When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `Install Update`. The app downloads the release ZIP, verifies its Ed25519 signature against the key built into the app, checks the unpacked app (bundle ID, version, code signature), then quits, swaps itself in place, and relaunches; the new app updates the Spotlight importer on launch. If the release has no signature, the app's folder is not writable, or any check fails, nothing is installed and the release page is offered instead.
 
