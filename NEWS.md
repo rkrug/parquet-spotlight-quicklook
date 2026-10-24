@@ -7,6 +7,8 @@
 - Added `Export Schema (JSON)` button in Quick Look (file and dataset previews).
 - Export now provides Arrow-friendly schema JSON with nested/flat views and reusable snippet stubs for R and Python.
 - Export JSON is now wrapped in a saved, versioned scheme envelope (`parquet-quicklook-arrow-schema-v1`) to allow adding additional export schemes later without breaking compatibility.
+- Quick Look previews now show the version in the heading, e.g. `Parquet Quick Look (v0.4.3)`.
+- `Show JSON` now toggles the export pane (`Hide JSON` closes it again).
 
 ### Security
 

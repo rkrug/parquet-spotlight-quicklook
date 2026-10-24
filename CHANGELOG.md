@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
   - flat field map with logical/physical types
   - reusable R and Python Arrow snippet stubs.
 - Added a versioned schema-export envelope (`parquet-quicklook-arrow-schema-v1`) so additional export schemes can be added later in a compatible way.
+- Quick Look headings now show the installed version (`Parquet Quick Look (vX.Y.Z)`, `Parquet Dataset Quick Look (vX.Y.Z)`).
+- The `Show JSON` button now toggles the export pane and reads `Hide JSON` while it is open.
 - Hardened Quick Look footer parsing against malformed metadata:
   - bound nesting depth and declared container sizes by remaining input
   - overflow-checked field ids, binary lengths, and row-group sums
