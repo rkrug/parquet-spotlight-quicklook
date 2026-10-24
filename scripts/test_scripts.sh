@@ -82,10 +82,10 @@ if ! contains_fixed "PASS: core logic tests completed" /tmp/parquet_script_test.
   fail "core test harness did not report success"
 fi
 
-echo "==> [7/8] Importer bounds tests"
-expect_success "scripts/test_importer_bounds.sh should succeed" ./scripts/test_importer_bounds.sh
-if ! contains_fixed "PASS: importer bounds tests completed" /tmp/parquet_script_test.out; then
-  fail "importer bounds tests did not report success"
+echo "==> [7/8] Importer entry point vs Arrow fixtures"
+expect_success "scripts/test_importer_summary.sh should succeed" ./scripts/test_importer_summary.sh
+if ! contains_fixed "PASS: importer summary tests completed" /tmp/parquet_script_test.out; then
+  fail "importer summary tests did not report success"
 fi
 
 echo "==> [8/8] Release workflow hardening checks"

@@ -28,7 +28,7 @@ The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), doe
 
 ## Prerequisites
 
-- **Minimum supported macOS version: 12.0 (Monterey).**
+- **Minimum supported macOS version: 13.0 (Ventura).** Builds are universal (Apple silicon and Intel).
 
 - macOS with Spotlight enabled
 - Xcode Command Line Tools (`xcrun`, `clang`, `codesign`)
@@ -67,15 +67,15 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.4.3
+./scripts/release.sh v0.5.0
 ```
 
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.4.3.dmg`
-- creates `release/Parquet-Spotlight-0.4.3.zip`
-- creates `release/Parquet-Spotlight-0.4.3.dmg.sha256`
+- creates `release/Parquet-Spotlight-0.5.0.dmg`
+- creates `release/Parquet-Spotlight-0.5.0.zip`
+- creates `release/Parquet-Spotlight-0.5.0.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
   - current branch is `main`
@@ -100,9 +100,15 @@ Typical asset name:
 Unsigned app note (important):
 
 - Releases are currently unsigned (ad-hoc signed for local loading, but not Apple Developer ID notarized).
-- On first launch, macOS may block the app with a security warning.
-- If blocked, right-click the app and choose `Open`, or go to:
+- On first launch, Gatekeeper blocks the app with a security warning.
+- To allow it, try to open the app once, then go to:
   - `System Settings -> Privacy & Security -> Open Anyway`
+- On macOS 13/14, right-click the app and choosing `Open` also works; macOS 15 and later removed that shortcut.
+- Alternatively, remove the download quarantine flag after copying the app:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
+```
 
 ## Rollback (Revert To A Previous Version)
 
@@ -134,7 +140,7 @@ Install for current user:
 This installs and registers:
 
 - `~/Library/Spotlight/Parquet.mdimporter`
-- `~/Applications/Parquet Quick Look and Index.app` (embedded modern Quick Look extension)
+- `~/Applications/Parquet Quick Look and Index.app` (embedded modern Quick Look extension), or the existing copy in `/Applications` if the app was installed from the DMG
 
 Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 
@@ -248,12 +254,12 @@ This also runs:
 
 ```bash
 ./scripts/test_core.sh
-./scripts/test_importer_bounds.sh
+./scripts/test_importer_summary.sh
 ```
 
-`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, and parser/importer sanity bounds.
+`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, parser sanity bounds, and the footer parser against the fixtures in `Tests/fixtures`.
 
-`test_importer_bounds.sh` checks that oversize or empty footer lengths are rejected and that the column-count cap stays in place.
+`test_importer_summary.sh` calls the Spotlight importer's entry point on the same fixtures. Both tests compare with `Tests/fixtures/expected.txt`, whose row and column counts come from Apache Arrow; regenerate fixtures with `Rscript Tests/fixtures/make_fixtures.R` (needs the R `arrow` package).
 
 ## Search
 
@@ -275,6 +281,8 @@ mdfind 'com_rkrug_parquet_row_count > 1000000'
 mdfind 'com_rkrug_parquet_column_count > 100'
 mdfind 'com_rkrug_parquet_columns == "species"'
 mdfind 'kMDItemKeywords == "col-species"'
+mdfind 'com_rkrug_parquet_partitions == "year=2024"'
+mdfind 'kMDItemKeywords == "part-year-2024"'
 ```
 
 ## Troubleshooting
@@ -351,6 +359,7 @@ Custom Parquet fields:
 - `com_rkrug_parquet_row_count` (`CFNumber`)
 - `com_rkrug_parquet_column_count` (`CFNumber`)
 - `com_rkrug_parquet_columns` (`CFString`, multivalued)
+- `com_rkrug_parquet_partitions` (`CFString`, multivalued)
 
 ## Queryable `mdfind` Properties
 
@@ -367,7 +376,7 @@ Custom Parquet fields:
   - Example: `mdfind 'com_rkrug_parquet_footer_length > 50000'`
 
 - `com_rkrug_parquet_row_count` (`CFNumber`):
-  - Best-effort extracted row count from footer metadata.
+  - Row count from the Parquet footer (file `num_rows`, or the sum over row groups).
   - Example: `mdfind 'com_rkrug_parquet_row_count > 1000000'`
 
 - `com_rkrug_parquet_column_count` (`CFNumber`):
@@ -375,8 +384,12 @@ Custom Parquet fields:
   - Example: `mdfind 'com_rkrug_parquet_column_count > 100'`
 
 - `com_rkrug_parquet_columns` (`CFString`, multivalued):
-  - Best-effort extracted column names from footer metadata.
+  - Leaf column paths parsed from the footer schema (nested fields joined with `.`, e.g. `point.x`, `tags.list.element`).
   - Example: `mdfind 'com_rkrug_parquet_columns == "Species"'`
+
+- `com_rkrug_parquet_partitions` (`CFString`, multivalued):
+  - Hive-style partitions from the file's folder path (`key=value` folder names, outermost first, values percent-decoded), e.g. `year=2024` for `.../year=2024/region=EU/part-0.parquet`. Taken from the path only; row data is never read.
+  - Example: `mdfind 'com_rkrug_parquet_partitions == "year=2024"'`
 
 - `kMDItemKeywords` (`CFString`, multivalued):
   - Includes generated tokens such as `col-<column_name>`, `parquet-valid`, `parquet-footer-<N>`.
@@ -391,6 +404,7 @@ Keyword tokens written by importer:
 - `parquet-rows-<N>`
 - `parquet-cols-<N>`
 - `col-<column_name>`
+- `part-<key>-<value>` (hive partitions, e.g. `part-year-2024`)
 
 ## Notes
 

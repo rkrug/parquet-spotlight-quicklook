@@ -412,7 +412,7 @@ private final class AppModel: ObservableObject {
         alert.runModal()
     }
 
-    private func currentVersion() -> String {
+    func currentVersion() -> String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
@@ -841,6 +841,14 @@ private struct ContentView: View {
                     .tag(SidebarPane.updates)
             }
             .listStyle(.sidebar)
+            .safeAreaInset(edge: .bottom) {
+                Text("Version \(model.currentVersion())")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
         } detail: {
             Group {
@@ -1034,17 +1042,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let root = ContentView(model: model)
-        let hosting = NSHostingView(rootView: root)
 
+        // Full-size content lets NavigationSplitView share the window's toolbar; without it
+        // SwiftUI draws a second toolbar band whose scroll-edge blur covers the first section header.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.center()
         window.title = "\(appName) Manager"
-        window.contentView = hosting
+        window.toolbarStyle = .unified
+        window.contentViewController = NSHostingController(rootView: root)
+        window.setContentSize(NSSize(width: 760, height: 560))
+        window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window

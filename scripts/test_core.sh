@@ -18,4 +18,4 @@ xcrun swiftc \
   "$ROOT_DIR/Tests/core_tests.swift" \
   -o "$BIN"
 
-"$BIN"
+PARQUET_FIXTURES_DIR="$ROOT_DIR/Tests/fixtures" "$BIN"

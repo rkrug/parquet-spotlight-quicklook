@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.0 - 2026-10-24
+
+- Bumped importer, app, and extension versions to `0.5.0`.
+- Moved the folder/dataset summary (file and row totals, column union, hive partition values) from the Quick Look extension to `Sources/ParquetCore/ParquetDataset.swift`, with tests on a generated hive-partitioned dataset.
+- Spotlight indexes hive partitions from the file's folder path as `com_rkrug_parquet_partitions` (`key=value`, percent-decoded, up to 32) and `part-<key>-<value>` keywords. Quick Look's folder preview uses the same partition parser (values are now percent-decoded there too).
+- Manager window: content now shares the window toolbar, so the first section header is no longer blurred.
+
+- One footer parser for Quick Look and Spotlight: the Thrift compact-protocol parser moved from `PreviewProvider.swift` to `Sources/ParquetCore/ParquetFooterParser.swift`. The importer is now a thin C CFPlugIn shell (`src/MetadataImporter.c`) calling it through `src/ImporterBridge.swift`.
+  - Fixes Spotlight values: the old C importer searched for Thrift *binary*-protocol markers, so row counts were usually 0 and column names came from an ASCII heuristic (capped at 128, with stray tokens such as `duckdb_schema`). It now stores the footer's row count and leaf column paths (nested fields joined with `.`).
+  - Files whose declared footer does not fit in the file are now indexed as invalid, matching Quick Look.
+  - Removed `src/ParquetBounds.h` and its test; limits live in `ParquetParserBounds`.
+- Added Arrow-generated fixtures (`Tests/fixtures`, `make_fixtures.R`) and tests that check both the Swift parser and the importer's C entry point against Arrow's row and column counts.
+
+- Build universal binaries (arm64 + x86_64) with an explicit macOS 13.0 deployment target. Previous builds silently required the build host's macOS (26 for 0.4.3) and Apple silicon.
+- Raised the documented and declared minimum macOS from 12.0 to 13.0; the manager app's SwiftUI layout requires macOS 13.
+- `install.sh` updates an existing `/Applications` install in place instead of adding a second copy in `~/Applications`.
+- `uninstall.sh` treats the protected container removal as best effort and also removes the `/Applications` copy.
+- Manager app shows its version in the sidebar.
+- README: updated Gatekeeper instructions for macOS 15+.
+- CI: pinned `actions/checkout` to a full commit SHA and stopped persisting checkout credentials.
+
 ## 0.4.3 - 2026-10-24
 
 - Added `Export Schema (JSON)` button in Quick Look previews (file and dataset views).
