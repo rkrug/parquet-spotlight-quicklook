@@ -525,8 +525,10 @@ private final class AppModel: ObservableObject {
             run("/usr/bin/killall", ["quicklookd", "QuickLookUIService", "Finder"])
 
             // Remove this app asynchronously after termination.
-            let appPath = Bundle.main.bundleURL.path.replacingOccurrences(of: "\"", with: "\\\"")
-            run("/bin/sh", ["-lc", "(sleep 1; rm -rf \"\(appPath)\") >/dev/null 2>&1 &"])
+            run(
+                ParquetSelfRemoval.shellPath,
+                ParquetSelfRemoval.shellArguments(forRemovingBundleAt: Bundle.main.bundleURL.path)
+            )
             setStatus("Uninstall complete. App will close.")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 NSApp.terminate(nil)

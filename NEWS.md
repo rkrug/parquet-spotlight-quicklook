@@ -1,5 +1,18 @@
 # News
 
+## Unreleased
+
+### Security
+
+- Hardened Quick Look footer parsing so malformed metadata is rejected instead of exhausting the preview process.
+- Dataset folder totals now saturate instead of wrapping.
+- Uninstall hands the app bundle path to the shell as an argument rather than interpolating it into a command string.
+- Spotlight column extraction skips oversize footers and caps the number of indexed columns. Files beyond those limits are still indexed as Parquet files.
+
+### Testing
+
+- Added sanity-bounds checks for importer limits, parse helpers, uninstall argument construction, and release-workflow pinning.
+
 ## 0.4.2 - 2026-03-12
 
 ### Bug Fixes

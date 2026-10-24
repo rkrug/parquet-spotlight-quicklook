@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Hardened Quick Look footer parsing against malformed metadata:
+  - bound nesting depth and declared container sizes by remaining input
+  - overflow-checked field ids, binary lengths, and row-group sums
+  - cap total skip work so parse cost stays linear in the footer size
+- Use saturating sums for Quick Look dataset size and row totals.
+- Pass the app bundle path to the uninstall shell as a positional argument.
+- Bound Spotlight importer footer reads (16 MiB) and column extraction (4096).
+- Harden the release workflow: pin actions to full commit SHAs, pass the tag via the environment, and do not persist checkout credentials.
+- Added sanity-bounds tests for importer footer limits, parser count/total helpers, uninstall argument construction, and release-workflow pinning.
+
 ## 0.4.2 - 2026-03-12
 
 - Fixed GitHub Release Assets workflow shell compatibility:

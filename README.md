@@ -246,9 +246,12 @@ This also runs:
 
 ```bash
 ./scripts/test_core.sh
+./scripts/test_importer_bounds.sh
 ```
 
-`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, and diagnostics redaction rules.
+`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, and parser/importer sanity bounds.
+
+`test_importer_bounds.sh` checks that oversize or empty footer lengths are rejected and that the column-count cap stays in place.
 
 ## Search
 
@@ -394,6 +397,8 @@ Keyword tokens written by importer:
 - Plugin factory UUID: `0E198062-E6D8-4AC2-BBCE-FB860A43A116`
 - Preview extension bundle ID: `com.rkrug.parquetindexer.previewhost.preview`
 - Quick Look host app bundle ID: `com.rkrug.parquetindexer.previewhost`
+- The importer extracts column names only from footers up to 16 MiB and indexes at most 4096 columns per file; larger footers are still indexed as Parquet files, without column names.
+- Quick Look preview parsing bounds nesting depth, declared container sizes, and skip work, and saturates dataset size/row totals. Well-formed files render as before; malformed footers are rejected.
 
 ## License
 

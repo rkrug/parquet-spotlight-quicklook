@@ -47,39 +47,62 @@ expect_failure() {
   fi
 }
 
-echo "==> [1/6] Build script smoke test"
+echo "==> [1/8] Build script smoke test"
 expect_success "scripts/build.sh should succeed" ./scripts/build.sh
 [[ -d "$ROOT_DIR/build/Parquet.mdimporter" ]] || fail "Parquet.mdimporter missing after build"
 [[ -d "$ROOT_DIR/build/Parquet Quick Look and Index.app" ]] || fail "Parquet Quick Look and Index.app missing after build"
 
-echo "==> [2/6] Uninstall dry-run smoke test"
+echo "==> [2/8] Uninstall dry-run smoke test"
 expect_success "scripts/uninstall.sh --dry-run should succeed" ./scripts/uninstall.sh --dry-run
 if ! contains_fixed "Dry run enabled" /tmp/parquet_script_test.out; then
   fail "uninstall dry-run output missing expected marker"
 fi
 
-echo "==> [3/6] Release script help smoke test"
+echo "==> [3/8] Release script help smoke test"
 expect_success "scripts/release.sh --help should succeed" ./scripts/release.sh --help
 if ! contains_fixed "Usage: ./scripts/release.sh" /tmp/parquet_script_test.out; then
   fail "release help output missing usage text"
 fi
 
-echo "==> [4/6] Release script invalid tag guard"
+echo "==> [4/8] Release script invalid tag guard"
 expect_failure "scripts/release.sh should reject invalid tags" ./scripts/release.sh invalid-tag
 if ! contains_fixed "error: tag must look like" /tmp/parquet_script_test.err; then
   fail "invalid-tag check missing expected error text"
 fi
 
-echo "==> [5/6] Release script notes-file guard"
+echo "==> [5/8] Release script notes-file guard"
 expect_failure "scripts/release.sh should fail when --notes file is missing" ./scripts/release.sh v0.4.0 --notes /tmp/does-not-exist-notes.md
 if ! contains_fixed "error: notes file does not exist" /tmp/parquet_script_test.err; then
   fail "missing-notes check missing expected error text"
 fi
 
-echo "==> [6/6] Core logic test harness"
+echo "==> [6/8] Core logic test harness"
 expect_success "scripts/test_core.sh should succeed" ./scripts/test_core.sh
 if ! contains_fixed "PASS: core logic tests completed" /tmp/parquet_script_test.out; then
   fail "core test harness did not report success"
+fi
+
+echo "==> [7/8] Importer bounds tests"
+expect_success "scripts/test_importer_bounds.sh should succeed" ./scripts/test_importer_bounds.sh
+if ! contains_fixed "PASS: importer bounds tests completed" /tmp/parquet_script_test.out; then
+  fail "importer bounds tests did not report success"
+fi
+
+echo "==> [8/8] Release workflow hardening checks"
+if ! contains_fixed "persist-credentials: false" "$ROOT_DIR/.github/workflows/release.yml"; then
+  fail "release checkout should not persist credentials"
+fi
+if ! contains_fixed "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" "$ROOT_DIR/.github/workflows/release.yml"; then
+  fail "release checkout action should be pinned to a full commit SHA"
+fi
+if ! contains_fixed "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65" "$ROOT_DIR/.github/workflows/release.yml"; then
+  fail "release upload action should be pinned to a full commit SHA"
+fi
+if ! contains_fixed "TAG: \${{ github.event.release.tag_name }}" "$ROOT_DIR/.github/workflows/release.yml"; then
+  fail "release tag should be passed through the environment"
+fi
+if contains_fixed "TAG=\"\${{ github.event.release.tag_name }}\"" "$ROOT_DIR/.github/workflows/release.yml"; then
+  fail "release tag should not be expanded inside the packaging script"
 fi
 
 echo "PASS: script smoke tests completed"

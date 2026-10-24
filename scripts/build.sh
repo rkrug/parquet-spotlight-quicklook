@@ -104,6 +104,7 @@ swiftc \
   -module-name ParquetQuickLookExtension \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
   -O \
+  "$ROOT_DIR/Sources/ParquetCore/ParserBounds.swift" \
   "$ROOT_DIR/preview/extension/PreviewProvider.swift" \
   "$BUILD_DIR/NSExtensionMain.o" \
   -framework AppKit \

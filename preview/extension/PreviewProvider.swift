@@ -116,11 +116,27 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     }
 
     private struct CompactParser {
+        // Valid footers nest only a handful of levels deep.
+        static let maxDepth = ParquetParserBounds.maxDepth
+
         private let bytes: [UInt8]
         private(set) var index: Int = 0
 
+        // Total skip work is capped at a small multiple of the input size.
+        private let maxSkips: Int
+        private var skips = 0
+
         init(data: Data) {
             self.bytes = [UInt8](data)
+            self.maxSkips = ParquetParserBounds.maxSkips(forInputBytes: self.bytes.count)
+        }
+
+        var remaining: Int { bytes.count - index }
+
+        // Every encoded element occupies at least one byte, so a declared count can never
+        // legitimately exceed the bytes left to parse.
+        func boundedCount(_ declared: Int) -> Int {
+            ParquetParserBounds.boundedCount(declared: declared, remaining: remaining)
         }
 
         mutating func readByte() throws -> UInt8 {
@@ -131,7 +147,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
 
         mutating func skip(_ count: Int) throws {
-            guard count >= 0, index + count <= bytes.count else { throw ParserError.outOfBounds }
+            guard count >= 0, count <= bytes.count - index else { throw ParserError.outOfBounds }
             index += count
         }
 
@@ -173,7 +189,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 }
                 fieldID = Int16(decoded)
             } else {
-                fieldID = lastFieldID + delta
+                let (sum, overflow) = lastFieldID.addingReportingOverflow(delta)
+                guard !overflow else { throw ParserError.invalidData }
+                fieldID = sum
             }
             lastFieldID = fieldID
             return (fieldID, type)
@@ -183,7 +201,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             let length = try readVarint()
             guard length <= UInt64(Int.max) else { throw ParserError.invalidData }
             let len = Int(length)
-            guard index + len <= bytes.count else { throw ParserError.outOfBounds }
+            guard len <= bytes.count - index else { throw ParserError.outOfBounds }
             let d = Data(bytes[index..<(index + len)])
             index += len
             return d
@@ -201,7 +219,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return (elementType, size)
         }
 
-        mutating func skipValue(type: UInt8) throws {
+        mutating func skipValue(type: UInt8, depth: Int = 0) throws {
+            guard depth < CompactParser.maxDepth else { throw ParserError.invalidData }
+            skips += 1
+            guard skips <= maxSkips else { throw ParserError.invalidData }
             switch type {
             case CompactType.booleanTrue.rawValue, CompactType.booleanFalse.rawValue:
                 return
@@ -215,8 +236,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 _ = try readBinaryData()
             case CompactType.list.rawValue, CompactType.set.rawValue:
                 let (elementType, size) = try readListHeader()
-                for _ in 0..<size {
-                    try skipValue(type: elementType)
+                for _ in 0..<boundedCount(size) {
+                    try skipValue(type: elementType, depth: depth + 1)
                 }
             case CompactType.map.rawValue:
                 let size = try readVarint()
@@ -227,14 +248,14 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 let keyType = kv >> 4
                 let valueType = kv & 0x0f
                 guard size <= UInt64(Int.max) else { throw ParserError.invalidData }
-                for _ in 0..<Int(size) {
-                    try skipValue(type: keyType)
-                    try skipValue(type: valueType)
+                for _ in 0..<boundedCount(Int(size)) {
+                    try skipValue(type: keyType, depth: depth + 1)
+                    try skipValue(type: valueType, depth: depth + 1)
                 }
             case CompactType.struct.rawValue:
                 var lastFieldID: Int16 = 0
                 while let (_, nestedType) = try readFieldHeader(lastFieldID: &lastFieldID) {
-                    try skipValue(type: nestedType)
+                    try skipValue(type: nestedType, depth: depth + 1)
                 }
             default:
                 throw ParserError.invalidData
@@ -374,7 +395,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             }
 
             if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 {
-                dataset.totalSize += UInt64(size)
+                dataset.totalSize = ParquetParserBounds.saturatingAdd(dataset.totalSize, UInt64(size))
             }
 
             parsePartitionSegments(from: fileURL, baseFolder: folderURL) { key, value in
@@ -390,7 +411,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 continue
             }
             dataset.validFileCount += 1
-            dataset.totalRows += max(0, fileMetadata.rowCount)
+            dataset.totalRows = ParquetParserBounds.saturatingAdd(dataset.totalRows, max(0, fileMetadata.rowCount))
 
             for col in fileMetadata.columns {
                 var types = typeMap[col.name] ?? Set<String>()
@@ -487,7 +508,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return []
         }
 
-        let (elementType, size) = try parser.readListHeader()
+        let (elementType, declaredSize) = try parser.readListHeader()
+        let size = parser.boundedCount(declaredSize)
         guard elementType == CompactType.struct.rawValue else {
             for _ in 0..<size {
                 try parser.skipValue(type: elementType)
@@ -496,7 +518,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
 
         var out: [SchemaElement] = []
-        out.reserveCapacity(size)
+        out.reserveCapacity(min(size, 4096))
         for _ in 0..<size {
             out.append(try parseSchemaElement(parser: &parser))
         }
@@ -726,7 +748,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return 0
         }
 
-        let (elementType, size) = try parser.readListHeader()
+        let (elementType, declaredSize) = try parser.readListHeader()
+        let size = parser.boundedCount(declaredSize)
         guard elementType == CompactType.struct.rawValue else {
             for _ in 0..<size {
                 try parser.skipValue(type: elementType)
@@ -736,7 +759,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
 
         var total: Int64 = 0
         for _ in 0..<size {
-            total += try parseRowGroup(parser: &parser)
+            let rows = try parseRowGroup(parser: &parser)
+            total = ParquetParserBounds.saturatingAdd(total, rows)
         }
         return max(0, total)
     }
@@ -762,8 +786,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var result: [ColumnInfo] = []
         var index = 0
 
-        func walk(path: [String]) {
-            guard index < schema.count else { return }
+        func walk(path: [String], depth: Int) {
+            guard index < schema.count, depth < CompactParser.maxDepth else { return }
             let node = schema[index]
             index += 1
 
@@ -771,8 +795,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             let nextPath = hasName ? (path + [node.name]) : path
 
             if node.numChildren > 0 {
-                for _ in 0..<node.numChildren {
-                    walk(path: nextPath)
+                // A node cannot have more children than there are elements left to consume.
+                let children = min(node.numChildren, schema.count - index)
+                for _ in 0..<children {
+                    walk(path: nextPath, depth: depth + 1)
                 }
             } else if hasName {
                 result.append(ColumnInfo(
@@ -791,12 +817,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let root = schema[0]
         index = 1
         if root.numChildren > 0 {
-            for _ in 0..<root.numChildren {
-                walk(path: [])
+            for _ in 0..<min(root.numChildren, schema.count - index) {
+                walk(path: [], depth: 0)
             }
         } else {
             while index < schema.count {
-                walk(path: [])
+                walk(path: [], depth: 0)
             }
         }
 
@@ -969,8 +995,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let root = ColumnTreeNode()
 
         for col in columns {
-            let parts = col.name.split(separator: ".").map(String.init)
+            var parts = col.name.split(separator: ".").map(String.init)
             if parts.isEmpty { continue }
+            if parts.count > CompactParser.maxDepth {
+                let tail = parts[(CompactParser.maxDepth - 1)...].joined(separator: ".")
+                parts = Array(parts[..<(CompactParser.maxDepth - 1)]) + [tail]
+            }
 
             var node = root
             var idx = 0

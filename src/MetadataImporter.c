@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "ParquetBounds.h"
+
 typedef struct MetadataImporterPluginType {
     MDImporterInterfaceStruct *conduitInterface;
     CFUUIDRef factoryID;
@@ -265,6 +267,9 @@ static CFArrayRef extract_parquet_column_names(const unsigned char *footer, size
         }
         append_unique_cfstring(columns, name);
         CFRelease(name);
+        if (CFArrayGetCount(columns) >= PARQUET_MAX_COLUMNS) {
+            break;
+        }
     }
 
     // Fallback heuristic: scan footer for identifier-like ASCII strings.
@@ -337,7 +342,7 @@ static int read_parquet_footer_bytes(const char *path, unsigned char **outBytes,
         ((uint32_t)trailer[1] << 8) |
         ((uint32_t)trailer[2] << 16) |
         ((uint32_t)trailer[3] << 24);
-    if (metaLenLE == 0 || (off_t)metaLenLE + 8 > st.st_size) {
+    if (!parquet_footer_length_acceptable(metaLenLE, st.st_size)) {
         close(fd);
         return -1;
     }

@@ -122,6 +122,31 @@ func runCoreTests() {
     let systemOutsideApplications = FakeSystemAccess(existingPaths: ["/tmp/Parquet Quick Look and Index.app"], commandOutputs: [:])
     let snapshot4 = nonAppsEvaluator.evaluate(using: systemOutsideApplications)
     assertTrue(!snapshot4.appInstalledInApplications, "app outside Applications should not count as installed")
+
+    // Self-removal must pass the bundle path as a positional parameter, never inside the script.
+    let pathWithShellSyntax = "/Users/x/Apps/$(echo a) `echo b` \"q\" \\x/Parquet Quick Look and Index.app"
+    let args = ParquetSelfRemoval.shellArguments(forRemovingBundleAt: pathWithShellSyntax)
+    assertEqual(args.first, "-c", "self-removal should invoke sh with -c")
+    assertEqual(args[1], "(sleep 1; rm -rf -- \"$1\") >/dev/null 2>&1 &", "shell script must be a fixed string")
+    assertEqual(args.last, pathWithShellSyntax, "bundle path must be passed as the positional argument")
+    assertEqual(args.count, 4, "expected -c, script, argv0, path")
+    assertTrue(!args[1].contains(pathWithShellSyntax), "bundle path must not be interpolated into the script")
+
+    // Sanity bounds: declared counts, totals, and skip budgets stay finite.
+    assertEqual(ParquetParserBounds.maxDepth, 100, "schema walk depth should stay modest")
+    assertEqual(ParquetParserBounds.maxIndexedColumns, 4096, "importer column cap")
+    assertEqual(ParquetParserBounds.maxFooterLength, 16 * 1024 * 1024, "importer footer cap")
+    assertEqual(ParquetParserBounds.boundedCount(declared: 50, remaining: 8), 8, "declared count should be clamped to remaining bytes")
+    assertEqual(ParquetParserBounds.boundedCount(declared: 3, remaining: 10), 3, "declared count within remaining bytes should be kept")
+    assertEqual(ParquetParserBounds.boundedCount(declared: 0, remaining: 10), 0, "zero declared count should be empty")
+    assertEqual(ParquetParserBounds.boundedCount(declared: -4, remaining: 10), 0, "negative declared count should be empty")
+    assertEqual(ParquetParserBounds.boundedCount(declared: 4, remaining: 0), 0, "no remaining bytes should yield an empty count")
+    assertEqual(ParquetParserBounds.saturatingAdd(Int64.max, Int64(1)), Int64.max, "int64 totals should saturate")
+    assertEqual(ParquetParserBounds.saturatingAdd(Int64(12), Int64(30)), Int64(42), "int64 totals should add when in range")
+    assertEqual(ParquetParserBounds.saturatingAdd(UInt64.max, UInt64(1)), UInt64.max, "uint64 totals should saturate")
+    assertEqual(ParquetParserBounds.saturatingAdd(UInt64(2), UInt64(3)), UInt64(5), "uint64 totals should add when in range")
+    assertTrue(ParquetParserBounds.maxSkips(forInputBytes: 10) < ParquetParserBounds.maxSkips(forInputBytes: 1_000), "skip budget should grow with input size")
+    assertTrue(ParquetParserBounds.maxSkips(forInputBytes: 0) > 0, "empty input still has a finite skip budget")
 }
 
 @main
