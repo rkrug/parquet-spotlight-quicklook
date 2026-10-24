@@ -67,7 +67,7 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.6.0
+./scripts/release.sh v0.7.0
 ```
 
 What it does:

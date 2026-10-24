@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.7.0 - 2026-10-24
 
+- Bumped importer, app, and extension versions to `0.7.0`.
 - The app declares the file types: `.parquet` as `com.rkrug.parquet` ("Apache Parquet File"; previously macOS only knew a dynamic type) and folders named `*.parquet_ds` as `com.rkrug.parquet-database` ("Parquet Database", a normal folder). Quick Look supports the database type. The importer now imports the `.parquet` declaration instead of exporting it.
 - Spotlight indexes column types as `com_rkrug_parquet_column_types` (`name:type`, e.g. `ts:timestamp[us]`).
 - Footer parser reads `created_by`, key/value metadata, and per row group the column chunks (codec, compressed/uncompressed size, statistics), keeping per-column totals, the first 200 row groups, 256 metadata entries and values up to 4 KiB (`ParquetParserBounds`). `parse(footer:)` now returns a `Summary`.

@@ -1,6 +1,6 @@
 # News
 
-## Unreleased
+## 0.7.0 - 2026-10-24
 
 ### Changes
 
