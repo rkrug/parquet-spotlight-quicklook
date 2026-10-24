@@ -412,7 +412,7 @@ private final class AppModel: ObservableObject {
         alert.runModal()
     }
 
-    private func currentVersion() -> String {
+    func currentVersion() -> String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
@@ -841,6 +841,14 @@ private struct ContentView: View {
                     .tag(SidebarPane.updates)
             }
             .listStyle(.sidebar)
+            .safeAreaInset(edge: .bottom) {
+                Text("Version \(model.currentVersion())")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
         } detail: {
             Group {
