@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- One footer parser for Quick Look and Spotlight: the Thrift compact-protocol parser moved from `PreviewProvider.swift` to `Sources/ParquetCore/ParquetFooterParser.swift`. The importer is now a thin C CFPlugIn shell (`src/MetadataImporter.c`) calling it through `src/ImporterBridge.swift`.
+  - Fixes Spotlight values: the old C importer searched for Thrift *binary*-protocol markers, so row counts were usually 0 and column names came from an ASCII heuristic (capped at 128, with stray tokens such as `duckdb_schema`). It now stores the footer's row count and leaf column paths (nested fields joined with `.`).
+  - Files whose declared footer does not fit in the file are now indexed as invalid, matching Quick Look.
+  - Removed `src/ParquetBounds.h` and its test; limits live in `ParquetParserBounds`.
+- Added Arrow-generated fixtures (`Tests/fixtures`, `make_fixtures.R`) and tests that check both the Swift parser and the importer's C entry point against Arrow's row and column counts.
+
 - Build universal binaries (arm64 + x86_64) with an explicit macOS 13.0 deployment target. Previous builds silently required the build host's macOS (26 for 0.4.3) and Apple silicon.
 - Raised the documented and declared minimum macOS from 12.0 to 13.0; the manager app's SwiftUI layout requires macOS 13.
 - `install.sh` updates an existing `/Applications` install in place instead of adding a second copy in `~/Applications`.

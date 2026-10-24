@@ -76,19 +76,46 @@ swift_universal() {
   lipo -create "${slices[@]}" -output "$output"
 }
 
-# Build metadata importer
-clang \
-  -isysroot "$SDK_PATH" \
-  -F"$SDK_PATH/System/Library/Frameworks/CoreServices.framework/Frameworks" \
-  -arch arm64 -arch x86_64 \
-  -mmacosx-version-min="$MIN_MACOS" \
-  -Wall -Wextra -Werror \
-  -O2 \
-  -bundle \
-  "$ROOT_DIR/src/MetadataImporter.c" \
-  -framework CoreFoundation \
-  -framework CoreServices \
-  -o "$MD_MACOS_DIR/ParquetImporter"
+# Build metadata importer: C CFPlugIn shell + shared Swift footer parser, linked as a
+# loadable bundle against the OS Swift runtime (/usr/lib/swift).
+SWIFT_LIB_DIRS=(-L "$SDK_PATH/usr/lib/swift" -L "$(dirname "$(xcrun --find swiftc)")/../lib/swift/macosx")
+importer_slices=()
+for arch in "${ARCHS[@]}"; do
+  clang \
+    -isysroot "$SDK_PATH" \
+    -F"$SDK_PATH/System/Library/Frameworks/CoreServices.framework/Frameworks" \
+    -arch "$arch" \
+    -mmacosx-version-min="$MIN_MACOS" \
+    -Wall -Wextra -Werror \
+    -O2 \
+    -c "$ROOT_DIR/src/MetadataImporter.c" \
+    -o "$SLICE_DIR/MetadataImporter-$arch.o"
+  swiftc \
+    -target "$arch-apple-macos$MIN_MACOS" \
+    -parse-as-library \
+    -module-name ParquetImporter \
+    -module-cache-path "$SWIFT_MODULE_CACHE" \
+    -O -wmo \
+    -emit-object \
+    "$ROOT_DIR/Sources/ParquetCore/ParserBounds.swift" \
+    "$ROOT_DIR/Sources/ParquetCore/ParquetFooterParser.swift" \
+    "$ROOT_DIR/src/ImporterBridge.swift" \
+    -o "$SLICE_DIR/ImporterSwift-$arch.o"
+  clang \
+    -isysroot "$SDK_PATH" \
+    -arch "$arch" \
+    -mmacosx-version-min="$MIN_MACOS" \
+    -bundle \
+    "$SLICE_DIR/MetadataImporter-$arch.o" \
+    "$SLICE_DIR/ImporterSwift-$arch.o" \
+    "${SWIFT_LIB_DIRS[@]}" \
+    -Wl,-rpath,/usr/lib/swift \
+    -framework CoreFoundation \
+    -framework CoreServices \
+    -o "$SLICE_DIR/ParquetImporter-$arch"
+  importer_slices+=("$SLICE_DIR/ParquetImporter-$arch")
+done
+lipo -create "${importer_slices[@]}" -output "$MD_MACOS_DIR/ParquetImporter"
 
 cp "$ROOT_DIR/plist/Info.plist" "$MD_BUNDLE_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/resources/schema.xml" "$MD_RESOURCES_DIR/schema.xml"
@@ -127,6 +154,7 @@ swift_universal "$APPEX_MACOS_DIR/ParquetQuickLookExtension" \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
   -O \
   "$ROOT_DIR/Sources/ParquetCore/ParserBounds.swift" \
+  "$ROOT_DIR/Sources/ParquetCore/ParquetFooterParser.swift" \
   "$ROOT_DIR/preview/extension/PreviewProvider.swift" \
   "$BUILD_DIR/NSExtensionMain.o" \
   -framework AppKit \

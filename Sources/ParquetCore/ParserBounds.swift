@@ -1,8 +1,8 @@
 import Foundation
 
 // Shared sanity bounds for untrusted Parquet footer metadata.
-// Keep these aligned with CompactParser in PreviewProvider.swift and
-// src/ParquetBounds.h.
+// Used by ParquetFooterParser.swift (shared by the Quick Look extension and
+// the Spotlight importer).
 public enum ParquetParserBounds {
     public static let maxDepth = 100
     public static let maxIndexedColumns = 4096

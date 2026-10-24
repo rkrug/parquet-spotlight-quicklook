@@ -149,10 +149,48 @@ func runCoreTests() {
     assertTrue(ParquetParserBounds.maxSkips(forInputBytes: 0) > 0, "empty input still has a finite skip budget")
 }
 
+// Footer parser vs Apache Arrow: Tests/fixtures/expected.txt holds Arrow's row and leaf-column
+// counts. scripts/test_importer_summary.sh checks the importer's C entry point against the same file.
+func runFooterFixtureTests(fixturesDir: String) {
+    guard let expected = try? String(contentsOfFile: fixturesDir + "/expected.txt", encoding: .utf8) else {
+        assertTrue(false, "missing \(fixturesDir)/expected.txt")
+        return
+    }
+    var checked = 0
+    for line in expected.split(separator: "\n") where !line.hasPrefix("#") {
+        let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        assertEqual(fields.count, 5, "malformed expected.txt line: \(line)")
+        let file = fields[0]
+        let summary = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/" + file))
+        let paths = fields[4].isEmpty ? [] : fields[4].split(separator: ",").map(String.init)
+        assertEqual(summary.valid, fields[1] == "1", "\(file): valid")
+        assertEqual(summary.rowCount, Int64(fields[2]) ?? -1, "\(file): row count")
+        assertEqual(summary.columns.count, Int(fields[3]) ?? -1, "\(file): leaf column count")
+        assertEqual(summary.columns.map(\.name), paths, "\(file): leaf column paths")
+        checked += 1
+    }
+    assertTrue(checked >= 6, "expected at least 6 fixtures, checked \(checked)")
+
+    let flat = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/flat.parquet"))
+    assertEqual(
+        flat.columns.map(\.logicalType),
+        ["int32", "double", "string", "bool", "date32[day]", "timestamp[us]", "decimal(10,2)"],
+        "flat.parquet: logical types"
+    )
+
+    // Malformed footers parse to nothing instead of throwing or trapping.
+    let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
+    assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
+    assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
 @main
 struct CoreTestsMain {
     static func main() {
         runCoreTests()
+        if let fixtures = ProcessInfo.processInfo.environment["PARQUET_FIXTURES_DIR"] {
+            runFooterFixtureTests(fixturesDir: fixtures)
+        }
         print("PASS: core logic tests completed")
     }
 }

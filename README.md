@@ -254,12 +254,12 @@ This also runs:
 
 ```bash
 ./scripts/test_core.sh
-./scripts/test_importer_bounds.sh
+./scripts/test_importer_summary.sh
 ```
 
-`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, and parser/importer sanity bounds.
+`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, parser sanity bounds, and the footer parser against the fixtures in `Tests/fixtures`.
 
-`test_importer_bounds.sh` checks that oversize or empty footer lengths are rejected and that the column-count cap stays in place.
+`test_importer_summary.sh` calls the Spotlight importer's entry point on the same fixtures. Both tests compare with `Tests/fixtures/expected.txt`, whose row and column counts come from Apache Arrow; regenerate fixtures with `Rscript Tests/fixtures/make_fixtures.R` (needs the R `arrow` package).
 
 ## Search
 
@@ -373,7 +373,7 @@ Custom Parquet fields:
   - Example: `mdfind 'com_rkrug_parquet_footer_length > 50000'`
 
 - `com_rkrug_parquet_row_count` (`CFNumber`):
-  - Best-effort extracted row count from footer metadata.
+  - Row count from the Parquet footer (file `num_rows`, or the sum over row groups).
   - Example: `mdfind 'com_rkrug_parquet_row_count > 1000000'`
 
 - `com_rkrug_parquet_column_count` (`CFNumber`):
@@ -381,7 +381,7 @@ Custom Parquet fields:
   - Example: `mdfind 'com_rkrug_parquet_column_count > 100'`
 
 - `com_rkrug_parquet_columns` (`CFString`, multivalued):
-  - Best-effort extracted column names from footer metadata.
+  - Leaf column paths parsed from the footer schema (nested fields joined with `.`, e.g. `point.x`, `tags.list.element`).
   - Example: `mdfind 'com_rkrug_parquet_columns == "Species"'`
 
 - `kMDItemKeywords` (`CFString`, multivalued):
