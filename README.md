@@ -110,6 +110,14 @@ Unsigned app note (important):
 xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 ```
 
+## Update
+
+1. Quit `Parquet Quick Look and Index` if it is running.
+2. Replace `Parquet Quick Look and Index.app` in `/Applications` with the one from the new DMG.
+3. Open the app once. On launch it replaces the Spotlight importer in `~/Library/Spotlight` when the bundled one is newer, re-registers it, and Spotlight re-indexes your Parquet files. The sidebar shows the new version.
+
+Apps older than the next release after 0.5.0 do not have this check: after updating to such a version, click `Re-Install` once. `Repair Registration` re-registers but keeps the installed importer.
+
 ## Rollback (Revert To A Previous Version)
 
 If a new release causes problems:
@@ -120,7 +128,7 @@ If a new release causes problems:
 ```
 2. Download an older DMG from:
    - [GitHub Releases](https://github.com/rkrug/parquet-spotlight-quicklook/releases)
-3. Install that older app and run `Re-Install` (or `Repair Registration`) once.
+3. Install that older app and run `Re-Install` once (the app never downgrades the importer on its own, and `Repair Registration` keeps the installed importer).
 
 Optional verification after rollback:
 

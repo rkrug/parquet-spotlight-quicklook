@@ -467,13 +467,34 @@ private final class AppModel: ObservableObject {
         }
     }
 
-    func autoInstallImporterIfMissing() {
+    func autoInstallOrUpdateImporter() {
         refreshStatus()
-        guard !importerInstalled else { return }
+        if !importerInstalled {
+            install()
+            refreshStatus()
+            if importerInstalled {
+                setStatus("Spotlight importer auto-installed.")
+            }
+            return
+        }
+
+        // Replacing the app does not touch ~/Library/Spotlight; update an older importer there.
+        guard
+            fm.fileExists(atPath: spotlightDst.path),
+            let bundledImporter = Bundle.main.url(forResource: "Parquet", withExtension: "mdimporter")
+        else { return }
+        let installed = Bundle(url: spotlightDst)?.infoDictionary
+        let bundled = Bundle(url: bundledImporter)?.infoDictionary
+        let installedVersion = installed?["CFBundleShortVersionString"] as? String
+        guard ParquetImporterUpdate.shouldReplace(
+            installedVersion: installedVersion,
+            installedBuild: installed?["CFBundleVersion"] as? String,
+            bundledVersion: bundled?["CFBundleShortVersionString"] as? String,
+            bundledBuild: bundled?["CFBundleVersion"] as? String
+        ) else { return }
         install()
-        refreshStatus()
         if importerInstalled {
-            setStatus("Spotlight importer auto-installed.")
+            setStatus("Spotlight importer updated from \(installedVersion ?? "unknown") to \(currentVersion()).")
         }
     }
 
@@ -1062,7 +1083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupMenu()
         DispatchQueue.main.async { [weak self] in
-            self?.model.autoInstallImporterIfMissing()
+            self?.model.autoInstallOrUpdateImporter()
             self?.model.autoCheckForUpdatesIfNeeded()
         }
     }

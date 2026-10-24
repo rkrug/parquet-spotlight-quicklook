@@ -123,6 +123,19 @@ func runCoreTests() {
     let snapshot4 = nonAppsEvaluator.evaluate(using: systemOutsideApplications)
     assertTrue(!snapshot4.appInstalledInApplications, "app outside Applications should not count as installed")
 
+    // Importer update on launch: only newer bundled importers replace the installed one.
+    func replace(_ installed: String?, _ installedBuild: String?, _ bundled: String?, _ bundledBuild: String?) -> Bool {
+        ParquetImporterUpdate.shouldReplace(installedVersion: installed, installedBuild: installedBuild, bundledVersion: bundled, bundledBuild: bundledBuild)
+    }
+    assertTrue(replace("0.4.3", "9", "0.5.0", "10"), "newer bundled version should replace")
+    assertTrue(!replace("0.5.0", "10", "0.5.0", "10"), "same version and build should not replace")
+    assertTrue(replace("0.5.0", "10", "0.5.0", "11"), "same version, newer build should replace")
+    assertTrue(!replace("0.5.0", "11", "0.5.0", "10"), "same version, older build should not replace")
+    assertTrue(!replace("0.6.0", "12", "0.5.0", "10"), "older bundled version should never downgrade")
+    assertTrue(replace(nil, nil, "0.5.0", "10"), "unreadable installed version should be replaced")
+    assertTrue(replace("garbage", "x", "0.5.0", "10"), "unparseable installed version should be replaced")
+    assertTrue(!replace("0.4.3", "9", nil, nil), "unreadable bundled version should not replace")
+
     // Self-removal must pass the bundle path as a positional parameter, never inside the script.
     let pathWithShellSyntax = "/Users/x/Apps/$(echo a) `echo b` \"q\" \\x/Parquet Quick Look and Index.app"
     let args = ParquetSelfRemoval.shellArguments(forRemovingBundleAt: pathWithShellSyntax)
