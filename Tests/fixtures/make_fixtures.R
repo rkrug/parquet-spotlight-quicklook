@@ -49,6 +49,22 @@ wide <- arrow_table(as.data.frame(setNames(as.list(seq_along(wide_names)), wide_
 write_parquet(wide, file.path(dir, "wide.parquet"))
 record("wide.parquet", wide_names)
 
+# Footer details (checked in core_tests.swift by construction): 3 row groups of 4/4/2 rows,
+# key/value metadata `owner`, ZSTD for `v` and SNAPPY elsewhere, and date/timestamp ranges
+# spread over the row groups (overall: 1999-12-31 23:59:59 UTC to 2024-11-30).
+footer <- arrow_table(
+  d = as.Date(c("2024-01-15", "2023-03-01", "2024-02-01", "2023-06-30", "2024-11-30",
+                "2023-12-31", "2024-05-05", "2023-04-04", "2024-07-07", "2023-08-08")),
+  ts_ms = Array$create(as.POSIXct(c("2020-01-01 00:00:00.123", "2021-06-30 12:00:00", rep("2020-06-01 00:00:00", 8)),
+                                  tz = "UTC"))$cast(timestamp("ms", "UTC")),
+  ts_ns = Array$create(as.POSIXct(c(rep("2000-01-01 00:00:00", 9), "1999-12-31 23:59:59"), tz = "UTC"))$cast(timestamp("ns", "UTC")),
+  v = Array$create(1:10, int32())
+)
+footer$metadata$owner <- "rkrug"
+write_parquet(footer, file.path(dir, "footer.parquet"), chunk_size = 4,
+              compression = c(d = "snappy", ts_ms = "snappy", ts_ns = "snappy", v = "zstd"))
+record("footer.parquet", c("d", "ts_ms", "ts_ns", "v"))
+
 # Not a Parquet file: the trailer of a cut-off file is missing.
 bytes <- readBin(file.path(dir, "flat.parquet"), "raw", n = 64)
 writeBin(bytes, file.path(dir, "truncated.parquet"))

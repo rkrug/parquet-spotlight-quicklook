@@ -1,14 +1,18 @@
 import Foundation
 
+// MAJOR.MINOR.PATCH with an optional SemVer pre-release (`0.8.0-beta.2`), ordered by SemVer:
+// a pre-release sorts before its release, identifiers compare numerically or lexically.
 public struct ParquetSemVer: Comparable {
     public let major: Int
     public let minor: Int
     public let patch: Int
+    public let preRelease: [String]
 
-    public init(major: Int, minor: Int, patch: Int) {
+    public init(major: Int, minor: Int, patch: Int, preRelease: [String] = []) {
         self.major = major
         self.minor = minor
         self.patch = patch
+        self.preRelease = preRelease
     }
 
     public static let zero = ParquetSemVer(major: 0, minor: 0, patch: 0)
@@ -17,6 +21,14 @@ public struct ParquetSemVer: Comparable {
         var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.hasPrefix("v") || raw.hasPrefix("V") {
             raw.removeFirst()
+        }
+        guard !raw.contains("+") else { return nil }
+        var preRelease: [String] = []
+        if let dash = raw.firstIndex(of: "-") {
+            preRelease = raw[raw.index(after: dash)...].split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+            let allowed = CharacterSet(charactersIn: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-")
+            guard preRelease.allSatisfy({ !$0.isEmpty && $0.unicodeScalars.allSatisfy(allowed.contains) }) else { return nil }
+            raw = String(raw[..<dash])
         }
         let parts = raw.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { return nil }
@@ -27,26 +39,81 @@ public struct ParquetSemVer: Comparable {
         else {
             return nil
         }
-        self.major = major
-        self.minor = minor
-        self.patch = patch
+        self.init(major: major, minor: minor, patch: patch, preRelease: preRelease)
     }
 
+    // Release tags: `vX.Y.Z` or `vX.Y.Z-<pre-release>`, no build metadata.
     public init?(strictTag value: String) {
         let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard raw.hasPrefix("v") else { return nil }
-        guard !raw.contains("-"), !raw.contains("+") else { return nil }
         self.init(looseVersion: String(raw.dropFirst()))
     }
 
+    public var isPreRelease: Bool { !preRelease.isEmpty }
+
     public var normalized: String {
-        "\(major).\(minor).\(patch)"
+        "\(major).\(minor).\(patch)" + (preRelease.isEmpty ? "" : "-" + preRelease.joined(separator: "."))
     }
 
     public static func < (lhs: ParquetSemVer, rhs: ParquetSemVer) -> Bool {
         if lhs.major != rhs.major { return lhs.major < rhs.major }
         if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
-        return lhs.patch < rhs.patch
+        if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
+        if lhs.preRelease.isEmpty || rhs.preRelease.isEmpty {
+            return !lhs.preRelease.isEmpty && rhs.preRelease.isEmpty
+        }
+        for (l, r) in zip(lhs.preRelease, rhs.preRelease) where l != r {
+            switch (Int(l), Int(r)) {
+            case let (a?, b?): return a < b
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return l < r
+            }
+        }
+        return lhs.preRelease.count < rhs.preRelease.count
+    }
+}
+
+public enum ParquetUpdateChannel: String, CaseIterable {
+    case stable
+    case beta
+}
+
+// Picks the release to offer from GitHub's release list (newest first or not).
+public enum ParquetReleaseSelector {
+    public struct Candidate {
+        public let tag: String
+        public let isPreRelease: Bool
+        public let isDraft: Bool
+
+        public init(tag: String, isPreRelease: Bool, isDraft: Bool) {
+            self.tag = tag
+            self.isPreRelease = isPreRelease
+            self.isDraft = isDraft
+        }
+    }
+
+    // Index of the newest release for the channel, or nil. Stable ignores pre-releases (by the
+    // GitHub flag and by the tag); beta takes the newest of both. Invalid tags and drafts are skipped.
+    public static func newest(_ candidates: [Candidate], channel: ParquetUpdateChannel) -> Int? {
+        var best: (index: Int, version: ParquetSemVer)?
+        for (index, candidate) in candidates.enumerated() where !candidate.isDraft {
+            guard let version = ParquetSemVer(strictTag: candidate.tag) else { continue }
+            if channel == .stable && (candidate.isPreRelease || version.isPreRelease) { continue }
+            if best == nil || best!.version < version {
+                best = (index, version)
+            }
+        }
+        return best?.index
+    }
+
+    // Explicit downgrade from a pre-release build: the newest stable release when it is older
+    // than `current`. nil on stable builds, and when a newer stable exists (a normal update).
+    public static func downgradeTarget(_ candidates: [Candidate], current: ParquetSemVer) -> Int? {
+        guard current.isPreRelease, let index = newest(candidates, channel: .stable),
+              let version = ParquetSemVer(strictTag: candidates[index].tag), version < current
+        else { return nil }
+        return index
     }
 }
 
@@ -80,25 +147,26 @@ public struct ParquetUpdateValidator {
     public let expectedGitHubHost: String
     public let expectedGitHubAPIHost: String
     public let expectedRepoPath: String
-    public let expectedReleasesLatestPath: String
+    // The release list (used by the update check for both channels).
+    public let expectedReleasesPath: String
 
     public init(
         expectedGitHubHost: String = "github.com",
         expectedGitHubAPIHost: String = "api.github.com",
         expectedRepoPath: String = "/rkrug/parquet-spotlight-quicklook",
-        expectedReleasesLatestPath: String = "/repos/rkrug/parquet-spotlight-quicklook/releases/latest"
+        expectedReleasesPath: String = "/repos/rkrug/parquet-spotlight-quicklook/releases"
     ) {
         self.expectedGitHubHost = expectedGitHubHost
         self.expectedGitHubAPIHost = expectedGitHubAPIHost
         self.expectedRepoPath = expectedRepoPath
-        self.expectedReleasesLatestPath = expectedReleasesLatestPath
+        self.expectedReleasesPath = expectedReleasesPath
     }
 
     public func isTrustedReleaseAPIResponseURL(_ url: URL?) -> Bool {
         guard let url else { return false }
         guard url.scheme?.lowercased() == "https" else { return false }
         guard url.host?.lowercased() == expectedGitHubAPIHost else { return false }
-        return normalizedPath(url.path) == expectedReleasesLatestPath
+        return normalizedPath(url.path) == expectedReleasesPath
     }
 
     public func isTrustedReleasePageURL(_ url: URL, expectedTag: String) -> Bool {

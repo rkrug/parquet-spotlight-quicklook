@@ -20,13 +20,13 @@ Rscript Tests/fixtures/make_fixtures.R   # regenerate fixtures + expected.txt (n
 ./scripts/release.sh vX.Y.Z [--notes f] [--skip-gh]   # DMG/zip/sha256 + GitHub release; requires clean, synced `main`
 ```
 
-There is no way to run a single core test; `Tests/core_tests.swift` is one executable. Manual checks: `mdimport -t -d2 file.parquet` (needs the importer installed; `mdimport -g` is gone), `mdls -name com_rkrug_parquet_is_valid file.parquet`, `qlmanage -p file.parquet`.
+The core tests include a seeded footer-corruption fuzz pass; replay or widen it with `PARQUET_FUZZ_SEED=<n> PARQUET_FUZZ_CASES=<n> PARQUET_FIXTURES_DIR=Tests/fixtures build/tests/core_tests`. There is no way to run a single core test; `Tests/core_tests.swift` is one executable. Manual checks: `mdimport -t -d2 file.parquet` (needs the importer installed; `mdimport -g` is gone), `mdls -name com_rkrug_parquet_is_valid file.parquet`, `qlmanage -p file.parquet`.
 
 ## Architecture
 
 Three artifacts, all produced by `scripts/build.sh`:
 
-- **`build/Parquet.mdimporter`** — `src/MetadataImporter.c` (thin C CFPlugIn shell) calling `parquet_read_summary` from `src/ImporterBridge.swift`, linked as a bundle against `/usr/lib/swift`; plus `plist/Info.plist` + `resources/schema.xml`. Declares UTI `com.rkrug.parquet` and the custom `com_rkrug_parquet_*` attributes; keep `schema.xml` and the attribute writes in the C file in sync, and README's "Exposed Properties" lists them.
+- **`build/Parquet.mdimporter`** — `src/MetadataImporter.c` (thin C CFPlugIn shell) copying the attribute dictionary built by `parquet_copy_attributes` in `src/ImporterBridge.swift` (all Spotlight attributes, keywords and text content are set there), linked as a bundle against `/usr/lib/swift`; plus `plist/Info.plist` + `resources/schema.xml`. Imports UTI `com.rkrug.parquet` and declares the custom `com_rkrug_parquet_*` attributes; keep `schema.xml` and the attribute names in `ImporterBridge.swift` in sync, and README's "Exposed Properties" lists them.
 - **`Parquet Quick Look and Index.app`** — GUI manager (`preview/app/AppMain.swift`): install/repair/uninstall, settings, update checks, diagnostics. Embeds the importer payload and the appex.
 - **`ParquetQuickLook.appex`** — modern Quick Look preview extension (`preview/extension/PreviewProvider.swift`, plus `NSExtensionMain.m` entry). Renders schema tree, dataset-folder summaries, and Arrow schema JSON export.
 
@@ -38,6 +38,6 @@ There is one Parquet footer parser (`ParquetFooterParser.swift`, Thrift compact 
 
 ## Versioning/release
 
-Version strings live in `plist/Info.plist`, `preview/app/Info.plist`, `preview/extension/Info.plist`, and are updated alongside `CHANGELOG.md` and `NEWS.md`. Tagged releases are built by `.github/workflows/release.yml`. Releases are ad-hoc signed only (not notarized). Branch workflow: development on `dev`, release from `main`.
+Version strings live in `plist/Info.plist`, `preview/app/Info.plist`, `preview/extension/Info.plist`, and are updated alongside `CHANGELOG.md` and `NEWS.md`. Tagged releases are built by `.github/workflows/release.yml`. Releases are ad-hoc signed only (not notarized). Branch workflow: development on `dev`, release from `main`; pre-releases (`vX.Y.Z-beta.N`, GitHub pre-releases, offered only on the app's Beta channel) may be tagged from `dev` via `scripts/release.sh`. For a pre-release, `CFBundleShortVersionString` stays `X.Y.Z` and the full version goes into `ParquetReleaseVersion` in `preview/app/Info.plist` (set it to `X.Y.Z` for the final release); the release workflow fails when the tag does not match it. Increase `CFBundleVersion` with every beta and release: the app replaces the installed importer by short version, then build number.
 
 In-app updates (`ParquetSelfUpdate` in `Sources/ParquetCore/SelfUpdate.swift`, flow in `AppMain.swift`) trust only an Ed25519 signature: the release workflow signs the ZIP with the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` via `scripts/sign_update.swift`, and the app checks it against `ParquetUpdatePublicKey` in `preview/app/Info.plist`. Rotating the key means shipping a release with the new public key first, signed with the old one. The private key never goes into the repository.

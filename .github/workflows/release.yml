@@ -18,6 +18,28 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
 
+      # The app's full version (ParquetReleaseVersion, else CFBundleShortVersionString) must
+      # match the tag, and a pre-release tag (vX.Y.Z-beta.N) must be a GitHub pre-release and
+      # vice versa; the in-app updater relies on both.
+      - name: Check tag against app version
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          PLIST=preview/app/Info.plist
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :ParquetReleaseVersion' "$PLIST" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          if [[ "${TAG#v}" != "$APP_VERSION" ]]; then
+            echo "::error::tag $TAG does not match the app version $APP_VERSION"
+            exit 1
+          fi
+          if [[ "$TAG" == *-* && "$PRERELEASE" != "true" ]] || [[ "$TAG" != *-* && "$PRERELEASE" == "true" ]]; then
+            echo "::error::tag $TAG and the GitHub pre-release flag ($PRERELEASE) disagree"
+            exit 1
+          fi
+
       - name: Build bundles
         run: ./scripts/build.sh
 

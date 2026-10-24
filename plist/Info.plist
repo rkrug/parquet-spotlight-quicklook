@@ -15,9 +15,9 @@
   <key>CFBundlePackageType</key>
   <string>BNDL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.6.0</string>
+  <string>0.7.1</string>
   <key>CFBundleVersion</key>
-  <string>12</string>
+  <string>15</string>
   <key>CFPlugInDynamicRegistration</key>
   <false/>
   <key>CFPlugInFactories</key>
@@ -60,7 +60,7 @@
       </array>
     </dict>
   </array>
-  <key>UTExportedTypeDeclarations</key>
+  <key>UTImportedTypeDeclarations</key>
   <array>
     <dict>
       <key>UTTypeIdentifier</key>

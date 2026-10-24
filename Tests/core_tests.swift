@@ -35,20 +35,56 @@ func runCoreTests() {
     // SemVer parsing/comparison.
     assertTrue(ParquetSemVer(strictTag: "v1.2.3") != nil, "strict tag should parse")
     assertTrue(ParquetSemVer(strictTag: "1.2.3") == nil, "strict tag should require v-prefix")
-    assertTrue(ParquetSemVer(strictTag: "v1.2.3-beta.1") == nil, "strict tag should reject prerelease")
+    assertEqual(ParquetSemVer(strictTag: "v1.2.3-beta.1")?.normalized, "1.2.3-beta.1", "strict tag accepts a pre-release")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3+build.5") == nil, "strict tag rejects build metadata")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-") == nil, "empty pre-release is invalid")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-beta..1") == nil, "empty pre-release identifier is invalid")
+    assertTrue(ParquetSemVer(strictTag: "v1.2.3-be ta") == nil, "pre-release identifiers are alphanumeric")
+    // SemVer 2.0 precedence example, ascending.
+    let ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0", "1.0.1-beta.1"]
+        .map { ParquetSemVer(looseVersion: $0)! }
+    for (a, b) in zip(ordered, ordered.dropFirst()) {
+        assertTrue(a < b && !(b < a), "pre-release order: \(a.normalized) < \(b.normalized)")
+    }
+    assertTrue(ParquetSemVer(looseVersion: "0.7.0-beta.1")!.isPreRelease, "beta is a pre-release")
     assertEqual(ParquetSemVer(looseVersion: "v0.4.0")?.normalized, "0.4.0", "loose version should normalize")
     assertTrue(ParquetSemVer(looseVersion: "1.10.0")! > ParquetSemVer(looseVersion: "1.2.9")!, "numeric version comparison should be correct")
 
     // Trusted URLs.
     let validator = ParquetUpdateValidator()
     assertTrue(
-        validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")),
+        validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases?per_page=30")),
         "trusted GitHub API URL should pass"
     )
     assertTrue(
-        !validator.isTrustedReleaseAPIResponseURL(URL(string: "http://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases/latest")),
+        !validator.isTrustedReleaseAPIResponseURL(URL(string: "http://api.github.com/repos/rkrug/parquet-spotlight-quicklook/releases")),
         "http API URL should fail"
     )
+    assertTrue(
+        !validator.isTrustedReleaseAPIResponseURL(URL(string: "https://api.github.com/repos/other/repo/releases")),
+        "other repository's release list should fail"
+    )
+
+    // Release channels: stable never sees a pre-release, beta takes the newest of both.
+    typealias C = ParquetReleaseSelector.Candidate
+    let releases = [
+        C(tag: "v0.7.0-beta.2", isPreRelease: true, isDraft: false),
+        C(tag: "v0.8.0", isPreRelease: false, isDraft: true),
+        C(tag: "v0.7.0-beta.1", isPreRelease: true, isDraft: false),
+        C(tag: "v0.6.0", isPreRelease: false, isDraft: false),
+        C(tag: "v0.6.5-rc.1", isPreRelease: false, isDraft: false),
+        C(tag: "nightly", isPreRelease: true, isDraft: false),
+    ]
+    assertEqual(ParquetReleaseSelector.newest(releases, channel: .stable), 3, "stable: newest non-pre-release, non-draft")
+    assertEqual(ParquetReleaseSelector.newest(releases, channel: .beta), 0, "beta: newest including pre-releases")
+    let withFinal = releases + [C(tag: "v0.7.0", isPreRelease: false, isDraft: false)]
+    assertEqual(ParquetReleaseSelector.newest(withFinal, channel: .beta), 6, "beta: final release beats its betas")
+    assertTrue(ParquetReleaseSelector.newest([], channel: .beta) == nil, "no releases")
+    let beta1 = ParquetSemVer(looseVersion: "0.7.0-beta.1")!
+    assertEqual(ParquetReleaseSelector.downgradeTarget(releases, current: beta1), 3, "downgrade: newest stable (v0.6.0), never a pre-release")
+    assertTrue(ParquetReleaseSelector.downgradeTarget(releases, current: ParquetSemVer(looseVersion: "0.6.0")!) == nil, "downgrade: not from a stable build")
+    assertTrue(ParquetReleaseSelector.downgradeTarget(withFinal, current: beta1) == nil, "downgrade: newer stable is an update, not a downgrade")
+    assertTrue(ParquetReleaseSelector.downgradeTarget([releases[0]], current: beta1) == nil, "downgrade: no stable release")
     assertTrue(
         validator.isTrustedReleasePageURL(URL(string: "https://github.com/rkrug/parquet-spotlight-quicklook/releases/tag/v0.4.0")!, expectedTag: "v0.4.0"),
         "trusted release page should pass"
@@ -202,12 +238,128 @@ func runFooterFixtureTests(fixturesDir: String) {
     let many = (1...100).map { "k\($0)=v" }.joined(separator: "/")
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
+    runFooterDetailTests(fixturesDir: fixturesDir)
     runDatasetTests(fixturesDir: fixturesDir)
+    runCorruptedFooterTests(fixturesDir: fixturesDir)
 
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
     assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
+// footer.parquet's writer, metadata, codecs, row groups and date ranges are set by make_fixtures.R.
+private func runFooterDetailTests(fixturesDir: String) {
+    func utc(_ iso: String) -> Date {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)!
+    }
+    let s = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/footer.parquet"))
+    assertEqual(s.createdBy, "parquet-cpp-arrow version 24.0.0", "footer: created_by")
+    assertEqual(s.keyValueMetadata.first { $0.key == "owner" }?.value, "rkrug", "footer: owner metadata")
+    assertTrue(s.keyValueMetadata.contains { $0.key == "ARROW:schema" && $0.valueLength > 0 }, "footer: ARROW:schema key")
+    assertEqual(s.rowGroupCount, 3, "footer: row group count")
+    assertEqual(s.rowGroups.map(\.rows), [4, 4, 2], "footer: rows per row group")
+    assertTrue(s.rowGroups.allSatisfy { $0.compressedSize > 0 && $0.totalByteSize > 0 }, "footer: row group sizes")
+    assertEqual(
+        s.rowGroups.reduce(0) { $0 + $1.compressedSize },
+        s.columns.reduce(0) { $0 + $1.compressedSize },
+        "footer: row group and column compressed sizes agree"
+    )
+    let byName = Dictionary(uniqueKeysWithValues: s.columns.map { ($0.name, $0) })
+    assertEqual(byName["d"]?.codecs, ["SNAPPY"], "footer: d codec")
+    assertEqual(byName["v"]?.codecs, ["ZSTD"], "footer: v codec")
+    assertTrue(s.columns.allSatisfy { $0.uncompressedSize > 0 }, "footer: uncompressed sizes")
+    assertEqual(byName["d"]?.minDate, utc("2023-03-01T00:00:00Z"), "footer: d min")
+    assertEqual(byName["d"]?.maxDate, utc("2024-11-30T00:00:00Z"), "footer: d max")
+    assertEqual(byName["ts_ms"]?.minDate, utc("2020-01-01T00:00:00.123Z"), "footer: ts_ms min")
+    assertEqual(byName["ts_ms"]?.maxDate, utc("2021-06-30T12:00:00Z"), "footer: ts_ms max")
+    assertEqual(byName["ts_ns"]?.minDate, utc("1999-12-31T23:59:59Z"), "footer: ts_ns min")
+    assertEqual(byName["ts_ns"]?.maxDate, utc("2000-01-01T00:00:00Z"), "footer: ts_ns max")
+    assertTrue(byName["v"]?.minDate == nil, "footer: no date range for int32")
+    assertEqual(s.dateRange?.min, utc("1999-12-31T23:59:59Z"), "footer: overall date min")
+    assertEqual(s.dateRange?.max, utc("2024-11-30T00:00:00Z"), "footer: overall date max")
+
+    let rowgroups = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/rowgroups.parquet"))
+    assertEqual(rowgroups.rowGroupCount, 10, "rowgroups.parquet: row group count")
+    assertTrue(rowgroups.dateRange == nil, "rowgroups.parquet: no date columns")
+    let flat = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/flat.parquet"))
+    assertEqual(flat.dateRange?.min, utc("2026-01-01T00:00:00Z"), "flat.parquet: date min (nulls ignored)")
+    assertEqual(flat.dateRange?.max, utc("2026-01-02T11:00:00Z"), "flat.parquet: date max (timestamp)")
+}
+
+// SplitMix64: a seeded generator, so a failing case can be replayed with PARQUET_FUZZ_SEED.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+// Footers are untrusted: randomly corrupted fixture footers must parse without trapping,
+// hanging, or exceeding the column bound. Override PARQUET_FUZZ_SEED / PARQUET_FUZZ_CASES to explore.
+private func runCorruptedFooterTests(fixturesDir: String) {
+    let env = ProcessInfo.processInfo.environment
+    let seed = env["PARQUET_FUZZ_SEED"].flatMap { UInt64($0) } ?? 27
+    let cases = env["PARQUET_FUZZ_CASES"].flatMap { Int($0) } ?? 3000
+    var rng = SeededGenerator(state: seed)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-fuzz-\(getpid()).parquet")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let files = ["flat.parquet", "nested.parquet", "rowgroups.parquet", "wide.parquet", "empty.parquet", "footer.parquet"]
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = files.compactMap { name in
+        guard let data = FileManager.default.contents(atPath: fixturesDir + "/" + name), data.count >= 12 else { return nil }
+        let bytes = [UInt8](data)
+        let n = bytes.count
+        let len = Int(bytes[n - 8]) | Int(bytes[n - 7]) << 8 | Int(bytes[n - 6]) << 16 | Int(bytes[n - 5]) << 24
+        return (name, bytes, n - 8 - len)
+    }
+    assertEqual(originals.count, files.count, "fuzz: fixtures readable")
+
+    var slowest = 0.0
+    for i in 0..<cases {
+        let original = originals[Int.random(in: 0..<originals.count, using: &rng)]
+        var bytes = original.bytes
+        let footerEnd = bytes.count - 8
+        let footerRange = original.footerStart..<footerEnd
+        let mutation = Int.random(in: 0..<5, using: &rng)
+        switch mutation {
+        case 0: // bit flips
+            for _ in 0..<Int.random(in: 1...8, using: &rng) {
+                bytes[Int.random(in: footerRange, using: &rng)] ^= UInt8(1) << UInt8.random(in: 0..<8, using: &rng)
+            }
+        case 1: // truncated footer (length field still claims the original size)
+            bytes.removeSubrange(Int.random(in: footerRange, using: &rng)..<footerEnd)
+        case 2: // 0xff runs inflate varint lengths, counts and field deltas
+            let start = Int.random(in: footerRange, using: &rng)
+            for j in start..<min(footerEnd, start + Int.random(in: 1...16, using: &rng)) { bytes[j] = 0xff }
+        case 3: // random footer length field
+            let len = UInt32.random(in: 0...UInt32.max, using: &rng)
+            for k in 0..<4 { bytes[footerEnd + k] = UInt8(truncatingIfNeeded: len >> (8 * UInt32(k))) }
+        default: // random bytes
+            for j in footerRange where Bool.random(using: &rng) { bytes[j] = UInt8.random(in: 0...255, using: &rng) }
+        }
+
+        let label = "fuzz seed \(seed) case \(i) (\(original.name), mutation \(mutation))"
+        let started = Date()
+        if mutation == 1 || mutation == 3 || i % 10 == 0 {
+            try? Data(bytes).write(to: tmp)
+            let summary = ParquetFooter.read(at: tmp)
+            assertTrue(summary.columns.count <= ParquetParserBounds.maxIndexedColumns, "\(label): read column bound")
+        } else {
+            let parsed = ParquetFooter.parse(footer: Data(bytes[footerRange]))
+            assertTrue(parsed.columns.count <= ParquetParserBounds.maxIndexedColumns, "\(label): parse column bound")
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        slowest = max(slowest, elapsed)
+        assertTrue(elapsed < 1.0, "\(label): took \(elapsed)s")
+    }
+    print("fuzz: \(cases) corrupted footers (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
 }
 
 private func runSelfUpdateTests() {

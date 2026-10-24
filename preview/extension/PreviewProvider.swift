@@ -498,6 +498,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .export-actions{margin-top:8px;display:flex;gap:8px}
             .sub-btn{border:1px solid #cbd5e1;background:#fff;color:#111827;border-radius:6px;padding:5px 8px;font-size:11px;cursor:pointer}
             .sub-btn:hover{background:#f3f4f6}
+            h2{font-size:15px;margin:22px 0 8px}
+            details{margin:10px 0}
+            summary{cursor:pointer;font-weight:600;padding:4px 0}
+            table.facts th{width:140px;background:transparent}
+            code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all}
           </style>
           <script>
             function schemaBytes(){
@@ -607,9 +612,77 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(rows)</tbody>
           </table>
+          \(footerDetailsHTML(metadata))
         </body>
         </html>
         """
+    }
+
+    // Writer, storage per column, row groups and key/value metadata; all from the footer.
+    private func footerDetailsHTML(_ m: Metadata) -> String {
+        guard m.valid else { return "" }
+        func bytes(_ v: Int64) -> String { esc(formatBytes(UInt64(max(0, v)))) }
+        // UTC date, plus the time when it is not midnight.
+        func day(_ d: Date) -> String {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(identifier: "UTC")
+            f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let s = f.string(from: d)
+            return esc(s.hasSuffix(" 00:00:00") ? String(s.dropLast(9)) : s)
+        }
+
+        let compressed = m.columns.reduce(Int64(0)) { ParquetParserBounds.saturatingAdd($0, $1.compressedSize) }
+        let uncompressed = m.columns.reduce(Int64(0)) { ParquetParserBounds.saturatingAdd($0, $1.uncompressedSize) }
+        var facts = "<tr><th>Writer</th><td>\(esc(m.createdBy ?? "—"))</td></tr>"
+        facts += "<tr><th>Row groups</th><td>\(esc(formatInt(Int64(m.rowGroupCount))))</td></tr>"
+        if uncompressed > 0 {
+            let ratio = String(format: "%.1f×", Double(uncompressed) / Double(max(1, compressed)))
+            facts += "<tr><th>Data size</th><td>\(bytes(compressed)) compressed, \(bytes(uncompressed)) uncompressed (\(ratio))</td></tr>"
+        }
+        if let range = m.dateRange {
+            facts += "<tr><th>Date range</th><td>\(day(range.min)) – \(day(range.max)) <span class=\"muted\">(column statistics, UTC)</span></td></tr>"
+        }
+        var html = "<h2>Footer details</h2><table class=\"facts\">\(facts)</table>"
+
+        if m.columns.contains(where: { !$0.codecs.isEmpty }) {
+            var rows = ""
+            for c in m.columns {
+                let range = c.minDate.flatMap { lo in c.maxDate.map { "\(day(lo)) – \(day($0))" } } ?? ""
+                rows += "<tr><td>\(esc(c.name))</td><td>\(esc(c.codecs.joined(separator: ", ")))</td><td>\(bytes(c.compressedSize))</td><td>\(bytes(c.uncompressedSize))</td><td>\(range)</td></tr>"
+            }
+            html += "<details><summary>Storage per column</summary><table><thead><tr><th>Column</th><th>Codec</th><th>Compressed</th><th>Uncompressed</th><th>Date range</th></tr></thead><tbody>\(rows)</tbody></table></details>"
+        }
+
+        if !m.rowGroups.isEmpty {
+            var rows = ""
+            for (i, g) in m.rowGroups.enumerated() {
+                rows += "<tr><td>\(i + 1)</td><td>\(esc(formatInt(g.rows)))</td><td>\(bytes(g.compressedSize))</td><td>\(bytes(g.totalByteSize))</td></tr>"
+            }
+            let more = m.rowGroupCount - m.rowGroups.count
+            if more > 0 {
+                rows += "<tr><td colspan=\"4\" class=\"muted\">+ \(more) more row groups</td></tr>"
+            }
+            html += "<details><summary>Row groups (\(m.rowGroupCount))</summary><table><thead><tr><th>#</th><th>Rows</th><th>Compressed</th><th>Uncompressed</th></tr></thead><tbody>\(rows)</tbody></table></details>"
+        }
+
+        if !m.keyValueMetadata.isEmpty {
+            var rows = ""
+            for kv in m.keyValueMetadata {
+                let value: String
+                if kv.key == "ARROW:schema" {
+                    value = "<span class=\"muted\">Arrow schema, \(kv.valueLength) bytes (see Show JSON)</span>"
+                } else if let v = kv.value {
+                    let short = v.count > 300 ? String(v.prefix(300)) + "…" : v
+                    value = "<code>\(esc(short))</code>" + (kv.valueLength > 300 ? " <span class=\"muted\">(\(kv.valueLength) bytes)</span>" : "")
+                } else {
+                    value = "<span class=\"muted\">no value</span>"
+                }
+                rows += "<tr><td>\(esc(kv.key))</td><td>\(value)</td></tr>"
+            }
+            html += "<details><summary>Key/value metadata (\(m.keyValueMetadata.count))</summary><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>\(rows)</tbody></table></details>"
+        }
+        return html
     }
 
     private func renderDatasetHTML(path: String, dataset: DatasetMetadata, settings: PreviewSettings) -> String {

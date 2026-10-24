@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.1 - 2026-10-24
+
+- Stable release of 0.7.1-beta.1 (and 0.7.0-beta.1); bumped importer, app, and extension builds to `15`, `ParquetReleaseVersion` is `0.7.1`.
+
+## 0.7.1-beta.1 - 2026-10-24 (pre-release)
+
+- Bumped importer, app, and extension versions to `0.7.1` (build 14); the app's `ParquetReleaseVersion` is `0.7.1-beta.1`.
+- `Downgrade to Stable…` in Updates on pre-release builds (#31): installs the newest stable release older than the running beta (`ParquetReleaseSelector.downgradeTarget`) through the signed update flow, sets the channel to Stable, and removes the installed Spotlight importer before the swap so the older app installs its own on launch. Without a signed download it opens the release page. The release-list request moved into `fetchReleases`, shared by update checks and the downgrade.
+
+## 0.7.0-beta.1 - 2026-10-24 (pre-release)
+
+- Bumped importer, app, and extension versions to `0.7.0` (build 13); the app's `ParquetReleaseVersion` is `0.7.0-beta.1`.
+- Beta channel (#30): `ParquetSemVer` parses and orders SemVer pre-releases (`0.7.0-beta.1 < 0.7.0`); `ParquetReleaseSelector` picks the newest release per channel (Stable skips pre-releases and drafts); the update check reads `/releases` instead of `/releases/latest`; `Release channel` picker (Stable/Beta) in the Updates settings, saved on change; update dialog marks betas. `release.sh` accepts pre-release tags from `dev` and creates GitHub pre-releases; the release workflow checks the tag against the app version and the pre-release flag.
+- The app declares the file types: `.parquet` as `com.rkrug.parquet` ("Apache Parquet File"; previously macOS only knew a dynamic type) and folders named `*.parquet_ds` as `com.rkrug.parquet-database` ("Parquet Database", a normal folder). Quick Look supports the database type. The importer now imports the `.parquet` declaration instead of exporting it.
+- Spotlight indexes column types as `com_rkrug_parquet_column_types` (`name:type`, e.g. `ts:timestamp[us]`).
+- Footer parser reads `created_by`, key/value metadata, and per row group the column chunks (codec, compressed/uncompressed size, statistics), keeping per-column totals, the first 200 row groups, 256 metadata entries and values up to 4 KiB (`ParquetParserBounds`). `parse(footer:)` now returns a `Summary`.
+- Spotlight: `kMDItemCreator` from `created_by` (#15), `com_rkrug_parquet_metadata_keys` and `meta-<key>` keywords (#15), and `com_rkrug_parquet_date_min` / `_date_max` (`CFDate`) over all date/timestamp columns from `min_value`/`max_value` statistics, falling back to legacy `min`/`max` (valid for signed INT32/INT64); timestamps are read as UTC (#18).
+- Importer bridge: `parquet_copy_attributes` returns the full attribute dictionary built in Swift; `MetadataImporter.c` only copies it (replaces `parquet_read_summary` / `parquet_read_partitions`).
+- Quick Look: footer details section with writer, row-group count, data size and compression ratio, date range, storage per column (codec, sizes, date range), row-group table and key/value metadata (#19).
+- New fixture `footer.parquet` (3 row groups, ZSTD/SNAPPY, `owner` metadata, date/ms/ns timestamp ranges) with core and importer tests.
+- Core tests corrupt the fixture footers (bit flips, truncation, `0xff` runs, random length fields, random bytes; 3000 seeded cases, `PARQUET_FUZZ_SEED` / `PARQUET_FUZZ_CASES` to override) and check `ParquetFooter.parse` / `read` for no trap, no hang (< 1 s per case), and the column bound (#16).
+- CI: a `compat` job runs the build and tests natively on `macos-15-intel` and `macos-15`, the oldest hosted macOS now that macOS 13/14 runners are retired (#17).
+
 ## 0.6.0 - 2026-10-24
 
 - Bumped importer, app, and extension versions to `0.6.0`.

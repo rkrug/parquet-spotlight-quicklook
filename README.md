@@ -67,7 +67,7 @@ The build script also:
 Automate build + DMG + GitHub release upload:
 
 ```bash
-./scripts/release.sh v0.6.0
+./scripts/release.sh v0.7.1
 ```
 
 What it does:
@@ -115,6 +115,12 @@ xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
 ### In-app (0.6.0 onwards)
 
 When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `Install Update`. The app downloads the release ZIP, verifies its Ed25519 signature against the key built into the app, checks the unpacked app (bundle ID, version, code signature), then quits, swaps itself in place, and relaunches; the new app updates the Spotlight importer on launch. If the release has no signature, the app's folder is not writable, or any check fails, nothing is installed and the release page is offered instead.
+
+### Beta channel (0.7.0-beta.1 onwards)
+
+`Updates` → `Release channel`: `Stable` (default) offers only regular releases; `Beta` also offers pre-releases (tags like `v0.8.0-beta.1`, published as GitHub pre-releases, signed and installed the same way). Switching back to `Stable` never downgrades: a beta stays installed until a newer stable release is out (e.g. `0.8.0` after `0.8.0-beta.2`). Apps older than 0.7.0-beta.1 only see stable releases.
+
+To leave a beta right away, use `Updates` → `Downgrade to Stable…` (beta builds from 0.7.1-beta.1 on): it installs the newest stable release with the same signature checks, switches the channel to Stable, and replaces the Spotlight importer with the stable one.
 
 Signing for maintainers: `swift scripts/sign_update.swift keygen` creates a key pair once. The private key goes into the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` (the release workflow then uploads `Parquet-Spotlight-<version>.zip.sig`), the public key into `ParquetUpdatePublicKey` in `preview/app/Info.plist`.
 
@@ -298,6 +304,7 @@ mdfind 'com_rkrug_parquet_column_count > 100'
 mdfind 'com_rkrug_parquet_columns == "species"'
 mdfind 'kMDItemKeywords == "col-species"'
 mdfind 'com_rkrug_parquet_partitions == "year=2024"'
+mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'
 mdfind 'kMDItemKeywords == "part-year-2024"'
 ```
 
@@ -366,6 +373,7 @@ Standard Spotlight fields:
 - `kMDItemDescription`
 - `kMDItemKeywords`
 - `kMDItemTextContent` (metadata tokens only; no row text)
+- `kMDItemCreator` (the writer from the footer's `created_by`, e.g. `parquet-cpp-arrow version 24.0.0`)
 
 Custom Parquet fields:
 
@@ -375,7 +383,10 @@ Custom Parquet fields:
 - `com_rkrug_parquet_row_count` (`CFNumber`)
 - `com_rkrug_parquet_column_count` (`CFNumber`)
 - `com_rkrug_parquet_columns` (`CFString`, multivalued)
+- `com_rkrug_parquet_column_types` (`CFString`, multivalued)
 - `com_rkrug_parquet_partitions` (`CFString`, multivalued)
+- `com_rkrug_parquet_metadata_keys` (`CFString`, multivalued)
+- `com_rkrug_parquet_date_min` / `com_rkrug_parquet_date_max` (`CFDate`)
 
 ## Queryable `mdfind` Properties
 
@@ -403,9 +414,25 @@ Custom Parquet fields:
   - Leaf column paths parsed from the footer schema (nested fields joined with `.`, e.g. `point.x`, `tags.list.element`).
   - Example: `mdfind 'com_rkrug_parquet_columns == "Species"'`
 
+- `com_rkrug_parquet_column_types` (`CFString`, multivalued):
+  - `name:type` per leaf column, with the Arrow-style logical type shown in Quick Look, e.g. `species:string`, `ts:timestamp[us]`, `amount:decimal(10,2)`.
+  - Example: `mdfind 'com_rkrug_parquet_column_types == "*:timestamp*"'`
+
 - `com_rkrug_parquet_partitions` (`CFString`, multivalued):
   - Hive-style partitions from the file's folder path (`key=value` folder names, outermost first, values percent-decoded), e.g. `year=2024` for `.../year=2024/region=EU/part-0.parquet`. Taken from the path only; row data is never read.
   - Example: `mdfind 'com_rkrug_parquet_partitions == "year=2024"'`
+
+- `kMDItemCreator` (`CFString`):
+  - The program that wrote the file (footer `created_by`), e.g. `parquet-cpp-arrow version 24.0.0`, DuckDB, Spark.
+  - Example: `mdfind 'kMDItemCreator == "*duckdb*"c'`
+
+- `com_rkrug_parquet_metadata_keys` (`CFString`, multivalued):
+  - Keys of the footer key/value metadata (e.g. `ARROW:schema`, `pandas`, custom keys); values are not indexed.
+  - Example: `mdfind 'com_rkrug_parquet_metadata_keys == "pandas"'`
+
+- `com_rkrug_parquet_date_min` / `com_rkrug_parquet_date_max` (`CFDate`):
+  - Earliest and latest value over all date and timestamp columns, from the footer's column statistics (no row data is read). Timestamps are read as UTC; columns without statistics are left out, and files without date/timestamp statistics have neither attribute.
+  - Example (files with data from 2024): `mdfind 'com_rkrug_parquet_date_max >= $time.iso(2024-01-01) && com_rkrug_parquet_date_min < $time.iso(2025-01-01)'`
 
 - `kMDItemKeywords` (`CFString`, multivalued):
   - Includes generated tokens such as `col-<column_name>`, `parquet-valid`, `parquet-footer-<N>`.
@@ -421,15 +448,17 @@ Keyword tokens written by importer:
 - `parquet-cols-<N>`
 - `col-<column_name>`
 - `part-<key>-<value>` (hive partitions, e.g. `part-year-2024`)
+- `meta-<key>` (footer key/value metadata keys, e.g. `meta-pandas`)
 
 ## Notes
 
-- UTI: `com.rkrug.parquet`
+- UTI: `com.rkrug.parquet` (`.parquet` files, "Apache Parquet File") and `com.rkrug.parquet-database` (folders named `*.parquet_ds`, "Parquet Database"; a normal folder, not a package). Both are declared by the app and registered once it has been launched; Quick Look shows the dataset summary for `.parquet_ds` folders.
 - Bundle ID: `com.rkrug.parquetindexer.importer`
 - Plugin factory UUID: `0E198062-E6D8-4AC2-BBCE-FB860A43A116`
 - Preview extension bundle ID: `com.rkrug.parquetindexer.previewhost.preview`
 - Quick Look host app bundle ID: `com.rkrug.parquetindexer.previewhost`
 - The importer extracts column names only from footers up to 16 MiB and indexes at most 4096 columns per file; larger footers are still indexed as Parquet files, without column names.
+- Quick Look shows footer details below the schema: writer, row groups, compressed/uncompressed size, date range, codec and size per column, and the key/value metadata (at most 200 row groups and 256 metadata entries listed; values cut to 4 KiB).
 - Quick Look preview parsing bounds nesting depth, declared container sizes, and skip work, and saturates dataset size/row totals. Well-formed files render as before; malformed footers are rejected.
 
 ## License
