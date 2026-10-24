@@ -5,7 +5,6 @@
 ### Changes
 
 - Beta channel: `Updates` → `Release channel` → `Beta` also offers pre-releases. This is the first one.
-
 - `.parquet` files are now a registered file type ("Apache Parquet File"), and folders named `*.parquet_ds` are recognised as "Parquet Database".
 - Spotlight finds files by the date range of their data, from the footer statistics: e.g. files with data from 2024: `mdfind 'com_rkrug_parquet_date_max >= $time.iso(2024-01-01) && com_rkrug_parquet_date_min < $time.iso(2025-01-01)'`.
 - Spotlight indexes the writer (`kMDItemCreator`, e.g. DuckDB, Spark, Arrow) and the names of the footer's key/value metadata.
