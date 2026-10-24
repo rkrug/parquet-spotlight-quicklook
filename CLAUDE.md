@@ -20,7 +20,7 @@ Rscript Tests/fixtures/make_fixtures.R   # regenerate fixtures + expected.txt (n
 ./scripts/release.sh vX.Y.Z [--notes f] [--skip-gh]   # DMG/zip/sha256 + GitHub release; requires clean, synced `main`
 ```
 
-There is no way to run a single core test; `Tests/core_tests.swift` is one executable. Manual checks: `mdimport -t -d2 file.parquet` (needs the importer installed; `mdimport -g` is gone), `mdls -name com_rkrug_parquet_is_valid file.parquet`, `qlmanage -p file.parquet`.
+The core tests include a seeded footer-corruption fuzz pass; replay or widen it with `PARQUET_FUZZ_SEED=<n> PARQUET_FUZZ_CASES=<n> PARQUET_FIXTURES_DIR=Tests/fixtures build/tests/core_tests`. There is no way to run a single core test; `Tests/core_tests.swift` is one executable. Manual checks: `mdimport -t -d2 file.parquet` (needs the importer installed; `mdimport -g` is gone), `mdls -name com_rkrug_parquet_is_valid file.parquet`, `qlmanage -p file.parquet`.
 
 ## Architecture
 

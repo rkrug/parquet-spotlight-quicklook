@@ -203,11 +203,85 @@ func runFooterFixtureTests(fixturesDir: String) {
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
     runDatasetTests(fixturesDir: fixturesDir)
+    runCorruptedFooterTests(fixturesDir: fixturesDir)
 
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
     assertEqual(garbage.rowCount, 0, "garbage footer: no rows")
     assertTrue(garbage.columns.isEmpty, "garbage footer: no columns")
+}
+
+// SplitMix64: a seeded generator, so a failing case can be replayed with PARQUET_FUZZ_SEED.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+// Footers are untrusted: randomly corrupted fixture footers must parse without trapping,
+// hanging, or exceeding the column bound. Override PARQUET_FUZZ_SEED / PARQUET_FUZZ_CASES to explore.
+private func runCorruptedFooterTests(fixturesDir: String) {
+    let env = ProcessInfo.processInfo.environment
+    let seed = env["PARQUET_FUZZ_SEED"].flatMap { UInt64($0) } ?? 27
+    let cases = env["PARQUET_FUZZ_CASES"].flatMap { Int($0) } ?? 3000
+    var rng = SeededGenerator(state: seed)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-fuzz-\(getpid()).parquet")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let files = ["flat.parquet", "nested.parquet", "rowgroups.parquet", "wide.parquet", "empty.parquet"]
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = files.compactMap { name in
+        guard let data = FileManager.default.contents(atPath: fixturesDir + "/" + name), data.count >= 12 else { return nil }
+        let bytes = [UInt8](data)
+        let n = bytes.count
+        let len = Int(bytes[n - 8]) | Int(bytes[n - 7]) << 8 | Int(bytes[n - 6]) << 16 | Int(bytes[n - 5]) << 24
+        return (name, bytes, n - 8 - len)
+    }
+    assertEqual(originals.count, files.count, "fuzz: fixtures readable")
+
+    var slowest = 0.0
+    for i in 0..<cases {
+        let original = originals[Int.random(in: 0..<originals.count, using: &rng)]
+        var bytes = original.bytes
+        let footerEnd = bytes.count - 8
+        let footerRange = original.footerStart..<footerEnd
+        let mutation = Int.random(in: 0..<5, using: &rng)
+        switch mutation {
+        case 0: // bit flips
+            for _ in 0..<Int.random(in: 1...8, using: &rng) {
+                bytes[Int.random(in: footerRange, using: &rng)] ^= UInt8(1) << UInt8.random(in: 0..<8, using: &rng)
+            }
+        case 1: // truncated footer (length field still claims the original size)
+            bytes.removeSubrange(Int.random(in: footerRange, using: &rng)..<footerEnd)
+        case 2: // 0xff runs inflate varint lengths, counts and field deltas
+            let start = Int.random(in: footerRange, using: &rng)
+            for j in start..<min(footerEnd, start + Int.random(in: 1...16, using: &rng)) { bytes[j] = 0xff }
+        case 3: // random footer length field
+            let len = UInt32.random(in: 0...UInt32.max, using: &rng)
+            for k in 0..<4 { bytes[footerEnd + k] = UInt8(truncatingIfNeeded: len >> (8 * UInt32(k))) }
+        default: // random bytes
+            for j in footerRange where Bool.random(using: &rng) { bytes[j] = UInt8.random(in: 0...255, using: &rng) }
+        }
+
+        let label = "fuzz seed \(seed) case \(i) (\(original.name), mutation \(mutation))"
+        let started = Date()
+        if mutation == 1 || mutation == 3 || i % 10 == 0 {
+            try? Data(bytes).write(to: tmp)
+            let summary = ParquetFooter.read(at: tmp)
+            assertTrue(summary.columns.count <= ParquetParserBounds.maxIndexedColumns, "\(label): read column bound")
+        } else {
+            let parsed = ParquetFooter.parse(footer: Data(bytes[footerRange]))
+            assertTrue(parsed.columns.count <= ParquetParserBounds.maxIndexedColumns, "\(label): parse column bound")
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        slowest = max(slowest, elapsed)
+        assertTrue(elapsed < 1.0, "\(label): took \(elapsed)s")
+    }
+    print("fuzz: \(cases) corrupted footers (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
 }
 
 private func runSelfUpdateTests() {
