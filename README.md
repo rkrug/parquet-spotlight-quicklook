@@ -28,7 +28,7 @@ The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), doe
 
 ## Prerequisites
 
-- **Minimum supported macOS version: 12.0 (Monterey).**
+- **Minimum supported macOS version: 13.0 (Ventura).** Builds are universal (Apple silicon and Intel).
 
 - macOS with Spotlight enabled
 - Xcode Command Line Tools (`xcrun`, `clang`, `codesign`)
@@ -100,9 +100,15 @@ Typical asset name:
 Unsigned app note (important):
 
 - Releases are currently unsigned (ad-hoc signed for local loading, but not Apple Developer ID notarized).
-- On first launch, macOS may block the app with a security warning.
-- If blocked, right-click the app and choose `Open`, or go to:
+- On first launch, Gatekeeper blocks the app with a security warning.
+- To allow it, try to open the app once, then go to:
   - `System Settings -> Privacy & Security -> Open Anyway`
+- On macOS 13/14, right-click the app and choosing `Open` also works; macOS 15 and later removed that shortcut.
+- Alternatively, remove the download quarantine flag after copying the app:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Parquet Quick Look and Index.app"
+```
 
 ## Rollback (Revert To A Previous Version)
 
@@ -134,7 +140,7 @@ Install for current user:
 This installs and registers:
 
 - `~/Library/Spotlight/Parquet.mdimporter`
-- `~/Applications/Parquet Quick Look and Index.app` (embedded modern Quick Look extension)
+- `~/Applications/Parquet Quick Look and Index.app` (embedded modern Quick Look extension), or the existing copy in `/Applications` if the app was installed from the DMG
 
 Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 

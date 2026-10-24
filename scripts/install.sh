@@ -6,6 +6,10 @@ BUNDLE_SRC="$ROOT_DIR/build/Parquet.mdimporter"
 APP_SRC="$ROOT_DIR/build/Parquet Quick Look and Index.app"
 BUNDLE_DST="$HOME/Library/Spotlight/Parquet.mdimporter"
 APP_DST="$HOME/Applications/Parquet Quick Look and Index.app"
+# Update an existing DMG install in /Applications in place instead of adding a second copy.
+if [[ -d "/Applications/Parquet Quick Look and Index.app" ]]; then
+  APP_DST="/Applications/Parquet Quick Look and Index.app"
+fi
 APPEX_DST="$APP_DST/Contents/PlugIns/ParquetQuickLook.appex"
 LEGACY_APP_DST="$HOME/Applications/ParquetPreviewHost.app"
 LEGACY_QUICKVIEW_APP_DST="$HOME/Applications/Parquet QuickView and Index.app"
@@ -55,7 +59,7 @@ fi
 
 # Ensure stale registrations from build/legacy paths do not take precedence.
 for stale in "$BUILD_APPEX_NEW" "$BUILD_APPEX_QUICKVIEW" "$BUILD_APPEX_OLD" "$SYSTEM_APPEX_NEW" "$SYSTEM_APPEX_QUICKVIEW" "$SYSTEM_APPEX_OLD" "$USER_APPEX_QUICKVIEW" "$USER_APPEX_OLD"; do
-  if [[ -d "$stale" ]]; then
+  if [[ -d "$stale" && "$stale" != "$APPEX_DST" ]]; then
     pluginkit -r "$stale" >/dev/null 2>&1 || true
   fi
 done

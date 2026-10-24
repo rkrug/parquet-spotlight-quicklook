@@ -1,5 +1,18 @@
 # News
 
+## Unreleased
+
+### Bug Fixes
+
+- The app and Quick Look extension now run on macOS 13 and later on both Apple silicon and Intel Macs. 0.4.3 builds only ran on macOS 26 with Apple silicon.
+- `install.sh` and `uninstall.sh` now handle apps installed from the DMG into `/Applications`, and uninstall no longer stops on the protected settings container.
+
+### Changes
+
+- Minimum macOS is now 13.0 (Ventura).
+- The manager app shows its version in the sidebar.
+- Updated Gatekeeper instructions for macOS 15 and later.
+
 ## 0.4.3 - 2026-10-24
 
 ### Enhancements

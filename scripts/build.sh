@@ -55,11 +55,33 @@ sign_with_retry() {
   done
 }
 
+# Universal binaries with an explicit deployment target; without these, swiftc
+# targets the build host's macOS version and architecture only.
+MIN_MACOS="13.0"
+ARCHS=(arm64 x86_64)
+SLICE_DIR="$BUILD_DIR/slices"
+rm -rf "$SLICE_DIR"
+mkdir -p "$SLICE_DIR"
+
+# swiftc builds one architecture at a time; build each slice and merge with lipo.
+swift_universal() {
+  local output="$1"
+  shift
+  local slices=()
+  for arch in "${ARCHS[@]}"; do
+    local slice="$SLICE_DIR/$(basename "$output")-$arch"
+    swiftc -target "$arch-apple-macos$MIN_MACOS" "$@" -o "$slice"
+    slices+=("$slice")
+  done
+  lipo -create "${slices[@]}" -output "$output"
+}
+
 # Build metadata importer
 clang \
   -isysroot "$SDK_PATH" \
   -F"$SDK_PATH/System/Library/Frameworks/CoreServices.framework/Frameworks" \
-  -mmacosx-version-min=12.0 \
+  -arch arm64 -arch x86_64 \
+  -mmacosx-version-min="$MIN_MACOS" \
   -Wall -Wextra -Werror \
   -O2 \
   -bundle \
@@ -72,7 +94,7 @@ cp "$ROOT_DIR/plist/Info.plist" "$MD_BUNDLE_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/resources/schema.xml" "$MD_RESOURCES_DIR/schema.xml"
 
 # Build host app with GUI manager (install/repair/uninstall/settings)
-swiftc \
+swift_universal "$APP_MACOS_DIR/ParquetQuickLookAndIndex" \
   -parse-as-library \
   -module-name ParquetQuickLookAndIndex \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
@@ -81,8 +103,7 @@ swiftc \
   "$ROOT_DIR/preview/app/AppMain.swift" \
   -framework AppKit \
   -framework Foundation \
-  -framework SwiftUI \
-  -o "$APP_MACOS_DIR/ParquetQuickLookAndIndex"
+  -framework SwiftUI
 
 cp "$ROOT_DIR/preview/app/Info.plist" "$APP_CONTENTS_DIR/Info.plist"
 cp "$ROOT_DIR/preview/app/AppIcon.icns" "$APP_RESOURCES_DIR/AppIcon.icns"
@@ -92,14 +113,15 @@ cp -R "$MD_BUNDLE_DIR" "$APP_RESOURCES_DIR/Parquet.mdimporter"
 # Build extension entry point object (NSExtensionMain)
 clang \
   -isysroot "$SDK_PATH" \
-  -mmacosx-version-min=12.0 \
+  -arch arm64 -arch x86_64 \
+  -mmacosx-version-min="$MIN_MACOS" \
   -Wall -Wextra -Werror \
   -O2 \
   -c "$ROOT_DIR/preview/extension/NSExtensionMain.m" \
   -o "$BUILD_DIR/NSExtensionMain.o"
 
 # Build modern Quick Look preview extension executable
-swiftc \
+swift_universal "$APPEX_MACOS_DIR/ParquetQuickLookExtension" \
   -parse-as-library \
   -module-name ParquetQuickLookExtension \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
@@ -110,8 +132,7 @@ swiftc \
   -framework AppKit \
   -framework Foundation \
   -framework QuickLookUI \
-  -framework UniformTypeIdentifiers \
-  -o "$APPEX_MACOS_DIR/ParquetQuickLookExtension"
+  -framework UniformTypeIdentifiers
 
 cp "$ROOT_DIR/preview/extension/Info.plist" "$APPEX_CONTENTS_DIR/Info.plist"
 

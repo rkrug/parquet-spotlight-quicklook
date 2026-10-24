@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-macOS-only (min 12.0) Spotlight importer + Quick Look preview for `.parquet` files. Pure shell + clang + swiftc, no Xcode project, no package manager. Only Parquet **footer metadata** is read; row data is never parsed.
+macOS-only (min 13.0, universal arm64 + x86_64) Spotlight importer + Quick Look preview for `.parquet` files. Pure shell + clang + swiftc, no Xcode project, no package manager. Only Parquet **footer metadata** is read; row data is never parsed.
 
 ## Commands
 
@@ -28,7 +28,9 @@ Three artifacts, all produced by `scripts/build.sh`:
 - **`Parquet Quick Look and Index.app`** — GUI manager (`preview/app/AppMain.swift`): install/repair/uninstall, settings, update checks, diagnostics. Embeds the importer payload and the appex.
 - **`ParquetQuickLook.appex`** — modern Quick Look preview extension (`preview/extension/PreviewProvider.swift`, plus `NSExtensionMain.m` entry). Renders schema tree, dataset-folder summaries, and Arrow schema JSON export.
 
-`Sources/ParquetCore/` holds pure logic (update URL/tag trust checks, version comparison, error mapping, diagnostics redaction, status logic). `build.sh` compiles it into both the app and the extension, and `test_core.sh` tests it, so keep it free of UI/AppKit dependencies.
+`Sources/ParquetCore/` holds pure logic (update URL/tag trust checks, version comparison, error mapping, diagnostics redaction, status logic). `build.sh` compiles all of it into the app but only `ParserBounds.swift` into the extension; `test_core.sh` tests it, so keep it free of UI/AppKit dependencies.
+
+`build.sh` sets the deployment target (`MIN_MACOS`) and builds each Swift binary once per architecture, merging with `lipo`. Without an explicit `-target`, swiftc silently targets the build host's macOS version and architecture. Check with `vtool -show-build` / `lipo -archs` after changing the build.
 
 Parquet footer parsing exists twice independently: in C (importer) and in Swift (`PreviewProvider.swift`). Changes to parsing behavior usually need to be made in both.
 

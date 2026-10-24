@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Build universal binaries (arm64 + x86_64) with an explicit macOS 13.0 deployment target. Previous builds silently required the build host's macOS (26 for 0.4.3) and Apple silicon.
+- Raised the documented and declared minimum macOS from 12.0 to 13.0; the manager app's SwiftUI layout requires macOS 13.
+- `install.sh` updates an existing `/Applications` install in place instead of adding a second copy in `~/Applications`.
+- `uninstall.sh` treats the protected container removal as best effort and also removes the `/Applications` copy.
+- Manager app shows its version in the sidebar.
+- README: updated Gatekeeper instructions for macOS 15+.
+- CI: pinned `actions/checkout` to a full commit SHA and stopped persisting checkout credentials.
+
 ## 0.4.3 - 2026-10-24
 
 - Added `Export Schema (JSON)` button in Quick Look previews (file and dataset views).
