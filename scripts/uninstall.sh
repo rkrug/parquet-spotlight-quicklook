@@ -4,6 +4,9 @@ set -euo pipefail
 BUNDLE_DST="$HOME/Library/Spotlight/Parquet.mdimporter"
 APP_DST="$HOME/Applications/Parquet Quick Look and Index.app"
 APPEX_DST="$APP_DST/Contents/PlugIns/ParquetQuickLook.appex"
+# DMG installs are dragged into /Applications.
+SYSTEM_APP_DST="/Applications/Parquet Quick Look and Index.app"
+SYSTEM_APPEX_DST="$SYSTEM_APP_DST/Contents/PlugIns/ParquetQuickLook.appex"
 LEGACY_QUICKVIEW_APP_DST="$HOME/Applications/Parquet QuickView and Index.app"
 LEGACY_QUICKVIEW_APPEX_DST="$LEGACY_QUICKVIEW_APP_DST/Contents/PlugIns/ParquetQuickView.appex"
 LEGACY_APP_DST="$HOME/Applications/ParquetPreviewHost.app"
@@ -35,6 +38,9 @@ fi
 if [[ -d "$APPEX_DST" ]]; then
   run "pluginkit -r \"$APPEX_DST\" >/dev/null 2>&1 || true"
 fi
+if [[ -d "$SYSTEM_APPEX_DST" ]]; then
+  run "pluginkit -r \"$SYSTEM_APPEX_DST\" >/dev/null 2>&1 || true"
+fi
 if [[ -d "$LEGACY_QUICKVIEW_APPEX_DST" ]]; then
   run "pluginkit -r \"$LEGACY_QUICKVIEW_APPEX_DST\" >/dev/null 2>&1 || true"
 fi
@@ -43,23 +49,28 @@ if [[ -d "$LEGACY_APPEX_DST" ]]; then
 fi
 
 run "rm -rf \"$APP_DST\""
+if [[ -d "$SYSTEM_APP_DST" ]]; then
+  run "rm -rf \"$SYSTEM_APP_DST\" || echo \"warning: could not remove $SYSTEM_APP_DST (remove it manually, e.g. with sudo)\" >&2"
+fi
 run "rm -rf \"$LEGACY_QUICKVIEW_APP_DST\""
 run "rm -rf \"$LEGACY_APP_DST\""
 run "rm -rf \"$BUNDLE_DST\""
 run "rm -rf \"$LEGACY_QL_DST\""
 run "rm -rf \"$SETTINGS_SUPPORT\""
 run "rm -rf \"$SETTINGS_CACHE\""
-run "rm -rf \"$SETTINGS_CONTAINER_DATA\""
-run "rm -rf \"$SETTINGS_CONTAINER\""
+# Best effort: containermanagerd protects the container root's metadata, so only Data may go.
+run "rm -rf \"$SETTINGS_CONTAINER_DATA\" >/dev/null 2>&1 || true"
+run "rm -rf \"$SETTINGS_CONTAINER\" >/dev/null 2>&1 || true"
 run "defaults delete \"$SETTINGS_DOMAIN\" >/dev/null 2>&1 || true"
 
 run "qlmanage -r >/dev/null 2>&1 || true"
 run "qlmanage -r cache >/dev/null 2>&1 || true"
 run "killall quicklookd QuickLookUIService Finder >/dev/null 2>&1 || true"
 
-echo "Uninstalled Parquet Spotlight importer and Quick Look app from user locations."
+echo "Uninstalled Parquet Spotlight importer and Quick Look app from user locations and /Applications."
 echo "Removed: $BUNDLE_DST"
 echo "Removed: $APP_DST"
+echo "Removed (if present): $SYSTEM_APP_DST"
 echo "Removed (legacy): $LEGACY_QUICKVIEW_APP_DST"
 echo "Removed (legacy): $LEGACY_APP_DST"
 echo "Removed legacy generator (if present): $LEGACY_QL_DST"
