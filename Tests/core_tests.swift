@@ -239,8 +239,10 @@ func runFooterFixtureTests(fixturesDir: String) {
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
     runFooterDetailTests(fixturesDir: fixturesDir)
+    runRowReaderTests(fixturesDir: fixturesDir)
     runDatasetTests(fixturesDir: fixturesDir)
     runCorruptedFooterTests(fixturesDir: fixturesDir)
+    runCorruptedPageTests(fixturesDir: fixturesDir)
 
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
@@ -287,6 +289,82 @@ private func runFooterDetailTests(fixturesDir: String) {
     let flat = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/flat.parquet"))
     assertEqual(flat.dateRange?.min, utc("2026-01-01T00:00:00Z"), "flat.parquet: date min (nulls ignored)")
     assertEqual(flat.dateRange?.max, utc("2026-01-02T11:00:00Z"), "flat.parquet: date max (timestamp)")
+}
+
+// rows_*.parquet: row i (1-based) as make_fixtures.R defines it, formatted independently of
+// ParquetRowReader (Foundation date formatting, printf decimals).
+private func expectedRow(_ i: Int) -> [String?] {
+    let utc = TimeZone(identifier: "UTC")!
+    let seconds = DateFormatter()
+    seconds.locale = Locale(identifier: "en_US_POSIX")
+    seconds.timeZone = utc
+    seconds.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let day = DateFormatter()
+    day.locale = Locale(identifier: "en_US_POSIX")
+    day.timeZone = utc
+    day.dateFormat = "yyyy-MM-dd"
+    let base2020 = 1_577_836_800
+    func at(_ s: Int) -> String { seconds.string(from: Date(timeIntervalSince1970: TimeInterval(s))) }
+    return [
+        "\(i)",
+        "\(i * 10_000_000_000)",
+        "\(Double(i) * 0.25)",
+        "\(Float(i) * 0.5)",
+        i % 2 == 0 ? "true" : "false",
+        i % 7 == 0 ? nil : "row-\(i)",
+        i % 11 == 0 ? nil : day.string(from: Date(timeIntervalSince1970: TimeInterval(base2020 + i * 86_400))),
+        at(base2020 + i * 1001 / 1000) + String(format: ".%03d", i * 1001 % 1000),
+        at(base2020 + i) + String(format: ".%06d", i),
+        at(i) + String(format: ".%09d", i),
+        String(format: "%.2f", Double(i) * 1.25),
+        String(format: "%.4f", -Double(i) * 1.5),
+        String(format: "0x%02xab", i % 256),
+        ParquetRowReader.nestedPlaceholder,
+        ParquetRowReader.nestedPlaceholder,
+    ]
+}
+
+private func runRowReaderTests(fixturesDir: String) {
+    let columns = ["i32", "i64", "dbl", "flt", "flag", "str", "d", "ts_ms", "ts_us", "ts_ns", "dec", "dec38", "bin", "tags", "pt"]
+    let expected = (1...250).map(expectedRow)
+    // Each codec, dictionary and PLAIN encoding, 3 row groups, several pages per chunk.
+    for file in ["rows_snappy", "rows_gzip", "rows_lz4", "rows_uncompressed", "rows_plain"] {
+        let t = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet"), maxRows: 1000, maxColumns: 100)
+        assertEqual(t.columns, columns, "\(file): top-level columns")
+        assertEqual(t.totalRows, 250, "\(file): total rows")
+        assertTrue(t.notes.isEmpty, "\(file): no notes, got \(t.notes)")
+        assertEqual(t.rows.count, 250, "\(file): row count")
+        for (r, row) in t.rows.enumerated() where row != expected[r] {
+            assertTrue(false, "\(file): row \(r + 1) is \(row), expected \(expected[r])")
+        }
+    }
+
+    let first = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet"), maxRows: 120, maxColumns: 3)
+    assertEqual(first.rows.count, 120, "maxRows: rows cut across row groups")
+    assertEqual(first.rows.last ?? [], Array(expected[119].prefix(3)), "maxRows: row 120 from the second row group")
+    assertEqual(first.columns, ["i32", "i64", "dbl"], "maxColumns: first columns")
+    assertEqual(first.hiddenColumns, 12, "maxColumns: hidden count")
+
+    let zstd = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_zstd.parquet"), maxRows: 10, maxColumns: 100)
+    assertEqual(zstd.notes.count, 1, "unsupported codec: one grouped note")
+    assertTrue(zstd.notes.first?.hasPrefix("codec ZSTD not supported yet: i32, i64") ?? false, "unsupported codec: note names the columns")
+    assertTrue(zstd.rows.allSatisfy { $0[0] == nil && $0[13] == ParquetRowReader.nestedPlaceholder }, "unsupported codec: nulls, nested still placeholders")
+
+    let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
+    assertEqual(int96.rows.map { $0[0] }, (1...250).map { expectedRow($0)[8].map { $0 + "000" } }, "INT96 timestamps (ns digits)")
+
+    let flat = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/flat.parquet"), maxRows: 10, maxColumns: 100)
+    assertEqual(flat.rows.count, 3, "flat.parquet: rows")
+    assertEqual(flat.rows[2], ["3", nil, nil, nil, nil, nil, nil], "flat.parquet: nulls in the third row")
+    assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/empty.parquet"), maxRows: 10, maxColumns: 10).rows.isEmpty, "empty.parquet: no rows")
+    assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/truncated.parquet"), maxRows: 10, maxColumns: 10).columns.isEmpty, "truncated.parquet: nothing")
+
+    // Nesting levels from the schema.
+    let nested = ParquetFooter.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet")).columns
+    let levels = Dictionary(uniqueKeysWithValues: nested.map { ($0.name, [$0.maxDefinitionLevel, $0.maxRepetitionLevel]) })
+    assertEqual(levels["i32"], [1, 0], "levels: optional top-level column")
+    assertEqual(levels["tags.list.element"], [3, 1], "levels: list<int>")
+    assertEqual(levels["pt.x"], [2, 0], "levels: struct field")
 }
 
 // SplitMix64: a seeded generator, so a failing case can be replayed with PARQUET_FUZZ_SEED.
@@ -360,6 +438,55 @@ private func runCorruptedFooterTests(fixturesDir: String) {
         assertTrue(elapsed < 1.0, "\(label): took \(elapsed)s")
     }
     print("fuzz: \(cases) corrupted footers (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
+}
+
+// Data pages are untrusted too: randomly corrupted pages (footer intact) must not trap or hang
+// the row reader. PARQUET_FUZZ_SEED applies here as well; PARQUET_FUZZ_PAGE_CASES sets the count.
+private func runCorruptedPageTests(fixturesDir: String) {
+    let env = ProcessInfo.processInfo.environment
+    let seed = env["PARQUET_FUZZ_SEED"].flatMap { UInt64($0) } ?? 27
+    let cases = env["PARQUET_FUZZ_PAGE_CASES"].flatMap { Int($0) } ?? 300
+    var rng = SeededGenerator(state: seed ^ 0x25)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-page-fuzz-\(getpid()).parquet")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_plain", "rows_uncompressed", "rows_int96"].compactMap { name in
+        guard let data = FileManager.default.contents(atPath: "\(fixturesDir)/\(name).parquet") else { return nil }
+        let b = [UInt8](data)
+        let n = b.count
+        let len = Int(b[n - 8]) | Int(b[n - 7]) << 8 | Int(b[n - 6]) << 16 | Int(b[n - 5]) << 24
+        return (name, b, n - 8 - len)
+    }
+    assertEqual(originals.count, 6, "page fuzz: fixtures readable")
+
+    var slowest = 0.0
+    for i in 0..<cases {
+        let original = originals[Int.random(in: 0..<originals.count, using: &rng)]
+        var bytes = original.bytes
+        let pages = 4..<original.footerStart
+        let mutation = Int.random(in: 0..<3, using: &rng)
+        switch mutation {
+        case 0: // bit flips
+            for _ in 0..<Int.random(in: 1...16, using: &rng) {
+                bytes[Int.random(in: pages, using: &rng)] ^= UInt8(1) << UInt8.random(in: 0..<8, using: &rng)
+            }
+        case 1: // 0xff runs: huge varints, lengths and run headers
+            let start = Int.random(in: pages, using: &rng)
+            for j in start..<min(pages.upperBound, start + Int.random(in: 1...32, using: &rng)) { bytes[j] = 0xff }
+        default: // random bytes over a stretch
+            let start = Int.random(in: pages, using: &rng)
+            for j in start..<min(pages.upperBound, start + Int.random(in: 1...256, using: &rng)) { bytes[j] = UInt8.random(in: 0...255, using: &rng) }
+        }
+        try? Data(bytes).write(to: tmp)
+        let started = Date()
+        let t = ParquetRowReader.read(at: tmp, maxRows: 250, maxColumns: 100)
+        let elapsed = Date().timeIntervalSince(started)
+        slowest = max(slowest, elapsed)
+        let label = "page fuzz seed \(seed) case \(i) (\(original.name), mutation \(mutation))"
+        assertTrue(t.rows.count <= 250 && t.rows.allSatisfy { $0.count == t.columns.count }, "\(label): table shape")
+        assertTrue(elapsed < 2.0, "\(label): took \(elapsed)s")
+    }
+    print("page fuzz: \(cases) corrupted files (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
 }
 
 private func runSelfUpdateTests() {

@@ -65,6 +65,42 @@ write_parquet(footer, file.path(dir, "footer.parquet"), chunk_size = 4,
               compression = c(d = "snappy", ts_ms = "snappy", ts_ns = "snappy", v = "zstd"))
 record("footer.parquet", c("d", "ts_ms", "ts_ns", "v"))
 
+# Row data (checked in core_tests.swift against the same formulas): 250 rows in row groups of
+# 100, small pages, one file per codec plus PLAIN-only and INT96 variants. Row i (1-based):
+#   i32 = i, i64 = i * 1e10, dbl = i * 0.25, flt = i * 0.5, flag = i even,
+#   str = "row-<i>" (null when i %% 7 == 0), d = 2020-01-01 + i days (null when i %% 11 == 0),
+#   ts_ms = 1577836800000 + i * 1001 ms, ts_us = 1577836800000000 + i * 1000001 us,
+#   ts_ns = i * 1000000001 ns, dec = i * 1.25 (decimal(10,2)), dec38 = -i * 1.5 (decimal(38,4)),
+#   bin = bytes (i %% 256, 0xab), tags = list(i, i + 1) (nested), pt = struct(x = i) (nested).
+n <- 250L
+i <- seq_len(n)
+rows <- arrow_table(
+  i32 = Array$create(i, int32()),
+  i64 = Array$create(i * 1e10, int64()),
+  dbl = i * 0.25,
+  flt = Array$create(i * 0.5, float32()),
+  flag = i %% 2L == 0L,
+  str = ifelse(i %% 7L == 0L, NA, paste0("row-", i)),
+  d = as.Date(ifelse(i %% 11L == 0L, NA, as.Date("2020-01-01") + i)),
+  ts_ms = Array$create(1577836800000 + i * 1001, int64())$cast(timestamp("ms", "UTC")),
+  ts_us = Array$create(1577836800000000 + i * 1000001, int64())$cast(timestamp("us", "UTC")),
+  ts_ns = Array$create(i * 1000000001, int64())$cast(timestamp("ns", "UTC")),
+  dec = Array$create(i * 1.25)$cast(decimal128(10, 2)),
+  dec38 = Array$create(-i * 1.5)$cast(decimal128(38, 4)),
+  bin = Array$create(lapply(i, function(k) as.raw(c(k %% 256L, 0xab))), binary()),
+  tags = lapply(i, function(k) c(k, k + 1L)),
+  pt = StructArray$create(data.frame(x = i))
+)
+for (codec in c("snappy", "gzip", "zstd", "lz4", "uncompressed")) {
+  write_parquet(rows, file.path(dir, paste0("rows_", codec, ".parquet")),
+                chunk_size = 100, compression = codec, data_page_size = 512)
+}
+write_parquet(rows, file.path(dir, "rows_plain.parquet"), chunk_size = 100,
+              compression = "snappy", use_dictionary = FALSE, data_page_size = 512)
+rows_int96 <- arrow_table(ts = Array$create(1577836800000000 + i * 1000001, int64())$cast(timestamp("us", "UTC")))
+write_parquet(rows_int96, file.path(dir, "rows_int96.parquet"), chunk_size = 100,
+              use_deprecated_int96_timestamps = TRUE)
+
 # Not a Parquet file: the trailer of a cut-off file is missing.
 bytes <- readBin(file.path(dir, "flat.parquet"), "raw", n = 64)
 writeBin(bytes, file.path(dir, "truncated.parquet"))

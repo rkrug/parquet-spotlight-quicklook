@@ -12,6 +12,17 @@ public enum ParquetParserBounds {
     public static let maxListedRowGroups = 200
     public static let maxMetadataEntries = 256
     public static let maxMetadataValueBytes = 4096
+    // Row preview (ParquetRowReader): rows and columns shown, total cells (rows are cut to fit),
+    // bytes read per column chunk, decompressed page size, page header size, dictionary entries,
+    // and characters per cell.
+    public static let maxPreviewRows = 10_000
+    public static let maxPreviewColumns = 200
+    public static let maxPreviewCells = 200_000
+    public static let maxPreviewChunkBytes = 64 * 1024 * 1024
+    public static let maxPreviewPageBytes = 32 * 1024 * 1024
+    public static let maxPreviewPageHeaderBytes = 1024 * 1024
+    public static let maxPreviewDictionaryValues = 1_000_000
+    public static let maxPreviewCellCharacters = 500
 
     // Every encoded element occupies at least one byte, so a declared count
     // can never legitimately exceed the bytes left to parse.
