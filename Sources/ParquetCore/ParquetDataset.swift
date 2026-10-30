@@ -17,7 +17,8 @@ public enum ParquetDataset {
         public init() {}
     }
 
-    // Returns nil when the folder cannot be read or holds no `.parquet` files.
+    // Returns nil when the folder cannot be read, holds no `.parquet` files, or is not one
+    // dataset (see isDatasetFile).
     public static func summarize(
         at folderURL: URL,
         maxFiles: Int,
@@ -48,6 +49,9 @@ public enum ParquetDataset {
             let ext = fileURL.pathExtension.lowercased()
             if ext != "parquet" {
                 continue
+            }
+            guard isDatasetFile(fileURL, under: folderURL) else {
+                return nil
             }
 
             dataset.fileCount += 1
@@ -107,8 +111,21 @@ public enum ParquetDataset {
         return dataset
     }
 
+    // A folder is one dataset when its .parquet files sit directly in it or below hive partition
+    // folders only (`key=value/...`). A .parquet file in any other subfolder means the folder
+    // holds several datasets (or unrelated files), so it is not treated as a dataset.
+    static func isDatasetFile(_ fileURL: URL, under baseFolder: URL) -> Bool {
+        let basePath = baseFolder.standardizedFileURL.path
+        let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
+        guard parentPath.hasPrefix(basePath) else { return false }
+        return parentPath.dropFirst(basePath.count).split(separator: "/").allSatisfy { segment in
+            guard let eq = segment.firstIndex(of: "=") else { return false }
+            return eq != segment.startIndex && segment.index(after: eq) != segment.endIndex
+        }
+    }
+
     // Partitions between the dataset root and the file; folders above the root are ignored.
-    private static func partitions(of fileURL: URL, under baseFolder: URL) -> [(key: String, value: String)] {
+    static func partitions(of fileURL: URL, under baseFolder: URL) -> [(key: String, value: String)] {
         let basePath = baseFolder.standardizedFileURL.path
         let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
         guard parentPath.hasPrefix(basePath) else {

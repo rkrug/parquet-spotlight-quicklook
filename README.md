@@ -460,6 +460,7 @@ Keyword tokens written by importer:
 - Preview extension bundle ID: `com.rkrug.parquetindexer.previewhost.preview`
 - Quick Look host app bundle ID: `com.rkrug.parquetindexer.previewhost`
 - The importer extracts column names only from footers up to 16 MiB and indexes at most 4096 columns per file; larger footers are still indexed as Parquet files, without column names.
+- The Quick Look Data tab reads ZSTD pages with the Zstandard decoder from zstd 1.5.7 (`third_party/zstd`, BSD license, © Meta Platforms, Inc.); Spotlight never reads row data.
 - Quick Look shows footer details below the schema: writer, row groups, compressed/uncompressed size, date range, codec and size per column, and the key/value metadata (at most 200 row groups and 256 metadata entries listed; values cut to 4 KiB).
 - Quick Look preview parsing bounds nesting depth, declared container sizes, and skip work, and saturates dataset size/row totals. Well-formed files render as before; malformed footers are rejected.
 

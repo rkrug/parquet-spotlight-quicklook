@@ -15,6 +15,15 @@ public enum ParquetFooter {
         // Range of date/timestamp columns from the chunk statistics, read as UTC.
         public var minDate: Date?
         public var maxDate: Date?
+        // Schema path (name is it joined with "."), nesting levels and FIXED_LEN_BYTE_ARRAY width,
+        // for the row reader (ParquetRowReader.swift).
+        public var path: [String] = []
+        public var maxDefinitionLevel = 0
+        public var maxRepetitionLevel = 0
+        public var typeLength = 0
+        // One per schema node from the top-level field down to this leaf (unnamed nodes
+        // included), for assembling nested values.
+        public var pathNodes: [PathNode] = []
 
         public init(name: String, logicalType: String, physicalType: String) {
             self.name = name
@@ -23,10 +32,34 @@ public enum ParquetFooter {
         }
     }
 
+    public struct PathNode: Equatable {
+        public let name: String
+        // 0 REQUIRED, 1 OPTIONAL, 2 REPEATED
+        public let repetition: Int64
+        // "LIST", "MAP" or "MAP_KEY_VALUE" for annotated groups, else nil.
+        public let annotation: String?
+        public let isLeaf: Bool
+    }
+
     public struct RowGroup: Equatable {
         public var rows: Int64 = 0
         public var totalByteSize: Int64 = 0
         public var compressedSize: Int64 = 0
+    }
+
+    // Where a column chunk's pages are, for reading row data (ColumnMetaData fields).
+    public struct ChunkLocation: Equatable {
+        public var codec: Int64 = 0
+        public var numValues: Int64 = 0
+        public var dataPageOffset: Int64 = -1
+        public var dictionaryPageOffset: Int64?
+        public var totalCompressedSize: Int64 = 0
+    }
+
+    public struct PreviewRowGroup: Equatable {
+        public var rows: Int64 = 0
+        // In leaf-column order.
+        public var chunks: [ChunkLocation] = []
     }
 
     public struct KeyValue: Equatable {
@@ -48,6 +81,8 @@ public enum ParquetFooter {
         public var rowGroupCount = 0
         // The first maxListedRowGroups row groups.
         public var rowGroups: [RowGroup] = []
+        // Chunk locations of the leading row groups that hold `keepChunksForRows` rows.
+        public var previewRowGroups: [PreviewRowGroup] = []
 
         public init() {}
 
@@ -60,7 +95,9 @@ public enum ParquetFooter {
         }
     }
 
-    public static func read(at url: URL) -> Summary {
+    // keepChunksForRows > 0 also keeps the chunk locations of the first row groups holding that
+    // many rows (previewRowGroups), for ParquetRowReader.
+    public static func read(at url: URL, keepChunksForRows: Int = 0) -> Summary {
         var out = Summary()
 
         guard let fh = try? FileHandle(forReadingFrom: url) else {
@@ -98,7 +135,7 @@ public enum ParquetFooter {
             let footer = try fh.read(upToCount: Int(footerLen)) ?? Data()
             guard footer.count == Int(footerLen) else { return out }
 
-            var parsed = parse(footer: footer)
+            var parsed = parse(footer: footer, keepChunksForRows: keepChunksForRows)
             parsed.fileSize = out.fileSize
             parsed.footerLength = out.footerLength
             parsed.valid = true
@@ -109,10 +146,10 @@ public enum ParquetFooter {
     }
 
     // Malformed footers yield an empty summary (no rows, no columns); `valid` is left to read(at:).
-    public static func parse(footer: Data) -> Summary {
+    public static func parse(footer: Data, keepChunksForRows: Int = 0) -> Summary {
         do {
             var parser = CompactParser(data: footer)
-            return try parseFileMetadata(parser: &parser)
+            return try parseFileMetadata(parser: &parser, keepChunksForRows: keepChunksForRows)
         } catch {
             return Summary()
         }
@@ -142,13 +179,16 @@ public enum ParquetFooter {
 
     private struct SchemaElement {
         let name: String
+        var typeLength = 0
+        // 0 REQUIRED, 1 OPTIONAL, 2 REPEATED
+        var repetition: Int64 = 0
         let type: Int32?
         let convertedType: Int32?
-        let logicalType: String?
+        var logicalType: String?
         let numChildren: Int
     }
 
-    private enum CompactType: UInt8 {
+    enum CompactType: UInt8 {
         case stop = 0x00
         case booleanTrue = 0x01
         case booleanFalse = 0x02
@@ -164,12 +204,12 @@ public enum ParquetFooter {
         case `struct` = 0x0c
     }
 
-    private enum ParserError: Error {
+    enum ParserError: Error {
         case outOfBounds
         case invalidData
     }
 
-    private struct CompactParser {
+    struct CompactParser {
         // Valid footers nest only a handful of levels deep.
         static let maxDepth = ParquetParserBounds.maxDepth
 
@@ -344,7 +384,7 @@ public enum ParquetFooter {
     }
 
     // FileMetaData: 2 schema, 3 num_rows, 4 row_groups, 5 key_value_metadata, 6 created_by.
-    private static func parseFileMetadata(parser: inout CompactParser) throws -> Summary {
+    private static func parseFileMetadata(parser: inout CompactParser, keepChunksForRows: Int) throws -> Summary {
         var lastFieldID: Int16 = 0
         var out = Summary()
         var fileRowCount: Int64 = 0
@@ -361,7 +401,7 @@ public enum ParquetFooter {
                 haveFileRowCount = true
             case 4:
                 // Writers put the schema first; chunk details need it to map chunks to columns.
-                rowGroupSum = try parseRowGroups(parser: &parser, fieldType: fieldType, into: &out)
+                rowGroupSum = try parseRowGroups(parser: &parser, fieldType: fieldType, into: &out, keepChunksForRows: keepChunksForRows)
             case 5:
                 out.keyValueMetadata = try parseKeyValueList(parser: &parser, fieldType: fieldType)
             case 6 where fieldType == CompactType.binary.rawValue:
@@ -440,6 +480,10 @@ public enum ParquetFooter {
         var convertedType: Int32?
         var logicalType: String?
         var numChildren = 0
+        var typeLength = 0
+        var repetition: Int64 = 0
+        var scale: Int64?
+        var precision: Int64?
 
         while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
             switch fieldID {
@@ -448,6 +492,15 @@ public enum ParquetFooter {
                 if v >= Int64(Int32.min), v <= Int64(Int32.max) {
                     type = Int32(v)
                 }
+            case 2:
+                let v = try parser.readInt64ForType(fieldType)
+                typeLength = v > 0 && v <= Int64(Int32.max) ? Int(v) : 0
+            case 3:
+                repetition = try parser.readInt64ForType(fieldType)
+            case 7:
+                scale = try parser.readInt64ForType(fieldType)
+            case 8:
+                precision = try parser.readInt64ForType(fieldType)
             case 6:
                 let v = try parser.readInt64ForType(fieldType)
                 if v >= Int64(Int32.min), v <= Int64(Int32.max) {
@@ -476,13 +529,20 @@ public enum ParquetFooter {
             }
         }
 
-        return SchemaElement(
+        var element = SchemaElement(
             name: name,
             type: type,
             convertedType: convertedType,
             logicalType: logicalType,
             numChildren: numChildren
         )
+        element.typeLength = typeLength
+        element.repetition = repetition
+        // Legacy decimals (converted type only) keep precision and scale in the element itself.
+        if logicalType == nil, convertedType == 5, let p = precision, let s = scale {
+            element.logicalType = "DECIMAL(\(p),\(s))"
+        }
+        return element
     }
 
     private static func parseLogicalType(parser: inout CompactParser, fieldType: UInt8) throws -> String? {
@@ -650,7 +710,7 @@ public enum ParquetFooter {
         return unit
     }
 
-    private static func parseRowGroups(parser: inout CompactParser, fieldType: UInt8, into out: inout Summary) throws -> Int64 {
+    private static func parseRowGroups(parser: inout CompactParser, fieldType: UInt8, into out: inout Summary, keepChunksForRows: Int) throws -> Int64 {
         guard fieldType == CompactType.list.rawValue else {
             try parser.skipValue(type: fieldType)
             return 0
@@ -666,8 +726,14 @@ public enum ParquetFooter {
         }
 
         var total: Int64 = 0
+        var keptRows: Int64 = 0
         for _ in 0..<size {
-            let group = try parseRowGroup(parser: &parser, columns: &out.columns)
+            let keep = keptRows < Int64(keepChunksForRows)
+            let (group, chunks) = try parseRowGroup(parser: &parser, columns: &out.columns, keepChunks: keep)
+            if keep {
+                out.previewRowGroups.append(PreviewRowGroup(rows: group.rows, chunks: chunks))
+                keptRows = ParquetParserBounds.saturatingAdd(keptRows, group.rows)
+            }
             total = ParquetParserBounds.saturatingAdd(total, group.rows)
             out.rowGroupCount += 1
             if out.rowGroups.count < ParquetParserBounds.maxListedRowGroups {
@@ -678,9 +744,10 @@ public enum ParquetFooter {
     }
 
     // RowGroup: 1 columns, 2 total_byte_size, 3 num_rows, 6 total_compressed_size (optional).
-    private static func parseRowGroup(parser: inout CompactParser, columns: inout [Column]) throws -> RowGroup {
+    private static func parseRowGroup(parser: inout CompactParser, columns: inout [Column], keepChunks: Bool) throws -> (RowGroup, [ChunkLocation]) {
         var lastFieldID: Int16 = 0
         var group = RowGroup()
+        var locations: [ChunkLocation] = []
         var chunkCompressed: Int64 = 0
         var haveCompressed = false
 
@@ -698,6 +765,7 @@ public enum ParquetFooter {
                     chunkCompressed = ParquetParserBounds.saturatingAdd(chunkCompressed, chunk.compressed)
                     if index < columns.count {
                         apply(chunk, to: &columns[index])
+                        if keepChunks { locations.append(chunk.location) }
                     }
                 }
             case 2:
@@ -713,7 +781,7 @@ public enum ParquetFooter {
         }
 
         if !haveCompressed { group.compressedSize = chunkCompressed }
-        return group
+        return (group, locations)
     }
 
     private struct ColumnChunkInfo {
@@ -725,10 +793,11 @@ public enum ParquetFooter {
         var maxValue: Data?
         var legacyMin: Data?
         var legacyMax: Data?
+        var location = ChunkLocation()
     }
 
-    // ColumnChunk: 3 meta_data. ColumnMetaData: 4 codec, 6 total_uncompressed_size,
-    // 7 total_compressed_size, 12 statistics.
+    // ColumnChunk: 3 meta_data. ColumnMetaData: 4 codec, 5 num_values, 6 total_uncompressed_size,
+    // 7 total_compressed_size, 9 data_page_offset, 11 dictionary_page_offset, 12 statistics.
     private static func parseColumnChunk(parser: inout CompactParser) throws -> ColumnChunkInfo {
         var info = ColumnChunkInfo()
         var lastFieldID: Int16 = 0
@@ -742,10 +811,18 @@ public enum ParquetFooter {
                 switch metaID {
                 case 4:
                     info.codec = try parser.readInt64ForType(metaType)
+                    info.location.codec = info.codec ?? 0
+                case 5:
+                    info.location.numValues = max(0, try parser.readInt64ForType(metaType))
                 case 6:
                     info.uncompressed = max(0, try parser.readInt64ForType(metaType))
                 case 7:
                     info.compressed = max(0, try parser.readInt64ForType(metaType))
+                    info.location.totalCompressedSize = info.compressed
+                case 9:
+                    info.location.dataPageOffset = try parser.readInt64ForType(metaType)
+                case 11:
+                    info.location.dictionaryPageOffset = try parser.readInt64ForType(metaType)
                 case 12 where metaType == CompactType.struct.rawValue:
                     try parseStatistics(parser: &parser, into: &info)
                 default:
@@ -846,22 +923,35 @@ public enum ParquetFooter {
         var result: [Column] = []
         var index = 0
 
-        func walk(path: [String], depth: Int) {
+        // Definition levels count OPTIONAL and REPEATED ancestors (incl. the leaf), repetition
+        // levels the REPEATED ones (Dremel encoding).
+        func walk(path: [String], nodes: [PathNode], depth: Int, def: Int, rep: Int) {
             guard index < schema.count, depth < CompactParser.maxDepth else { return }
             let node = schema[index]
             index += 1
 
             let hasName = !node.name.isEmpty
             let nextPath = hasName ? (path + [node.name]) : path
+            let nextDef = def + (node.repetition == 1 || node.repetition == 2 ? 1 : 0)
+            let nextRep = rep + (node.repetition == 2 ? 1 : 0)
+            var annotation: String?
+            if node.logicalType == "LIST" || node.convertedType == 3 {
+                annotation = "LIST"
+            } else if node.logicalType == "MAP" || node.convertedType == 1 {
+                annotation = "MAP"
+            } else if node.convertedType == 2 {
+                annotation = "MAP_KEY_VALUE"
+            }
+            let nextNodes = nodes + [PathNode(name: node.name, repetition: node.repetition, annotation: annotation, isLeaf: node.numChildren == 0)]
 
             if node.numChildren > 0 {
                 // A node cannot have more children than there are elements left to consume.
                 let children = min(node.numChildren, schema.count - index)
                 for _ in 0..<children {
-                    walk(path: nextPath, depth: depth + 1)
+                    walk(path: nextPath, nodes: nextNodes, depth: depth + 1, def: nextDef, rep: nextRep)
                 }
             } else if hasName {
-                result.append(Column(
+                var column = Column(
                     name: nextPath.joined(separator: "."),
                     logicalType: parquetLogicalTypeLabel(
                         physical: node.type,
@@ -869,7 +959,13 @@ public enum ParquetFooter {
                         logical: node.logicalType
                     ),
                     physicalType: parquetPhysicalTypeLabel(physical: node.type)
-                ))
+                )
+                column.path = nextPath
+                column.maxDefinitionLevel = nextDef
+                column.maxRepetitionLevel = nextRep
+                column.typeLength = node.typeLength
+                column.pathNodes = nextNodes
+                result.append(column)
             }
         }
 
@@ -878,11 +974,11 @@ public enum ParquetFooter {
         index = 1
         if root.numChildren > 0 {
             for _ in 0..<min(root.numChildren, schema.count - index) {
-                walk(path: [], depth: 0)
+                walk(path: [], nodes: [], depth: 0, def: 0, rep: 0)
             }
         } else {
             while index < schema.count {
-                walk(path: [], depth: 0)
+                walk(path: [], nodes: [], depth: 0, def: 0, rep: 0)
             }
         }
 
@@ -896,24 +992,24 @@ public enum ParquetFooter {
         case 1: return "MAP"
         case 2: return "MAP_KEY_VALUE"
         case 3: return "LIST"
-        case 5: return "ENUM"
-        case 6: return "DECIMAL"
-        case 7: return "DATE"
-        case 8: return "TIME_MILLIS"
-        case 9: return "TIME_MICROS"
-        case 10: return "TIMESTAMP_MILLIS"
-        case 11: return "TIMESTAMP_MICROS"
-        case 12: return "UINT_8"
-        case 13: return "UINT_16"
-        case 14: return "UINT_32"
-        case 15: return "UINT_64"
-        case 16: return "INT_8"
-        case 17: return "INT_16"
-        case 18: return "INT_32"
-        case 19: return "INT_64"
-        case 20: return "JSON"
-        case 21: return "BSON"
-        case 22: return "INTERVAL"
+        case 4: return "ENUM"
+        case 5: return "DECIMAL"
+        case 6: return "DATE"
+        case 7: return "TIME_MILLIS"
+        case 8: return "TIME_MICROS"
+        case 9: return "TIMESTAMP_MILLIS"
+        case 10: return "TIMESTAMP_MICROS"
+        case 11: return "UINT_8"
+        case 12: return "UINT_16"
+        case 13: return "UINT_32"
+        case 14: return "UINT_64"
+        case 15: return "INT_8"
+        case 16: return "INT_16"
+        case 17: return "INT_32"
+        case 18: return "INT_64"
+        case 19: return "JSON"
+        case 20: return "BSON"
+        case 21: return "INTERVAL"
         default: return nil
         }
     }

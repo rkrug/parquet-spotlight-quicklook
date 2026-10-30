@@ -120,14 +120,27 @@ lipo -create "${importer_slices[@]}" -output "$MD_MACOS_DIR/ParquetImporter"
 cp "$ROOT_DIR/plist/Info.plist" "$MD_BUNDLE_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/resources/schema.xml" "$MD_RESOURCES_DIR/schema.xml"
 
+# Vendored zstd decoder + wrapper (third_party/zstd), for ZSTD pages in the Quick Look Data tab.
+# Built by the app and the extension, which both compile Sources/ParquetCore; not in the importer.
+ZSTD_HEADER="$ROOT_DIR/third_party/zstd/parquet_zstd.h"
+clang \
+  -isysroot "$SDK_PATH" \
+  -arch arm64 -arch x86_64 \
+  -mmacosx-version-min="$MIN_MACOS" \
+  -O2 \
+  -c "$ROOT_DIR/third_party/zstd/parquet_zstd.c" \
+  -o "$BUILD_DIR/parquet_zstd.o"
+
 # Build host app with GUI manager (install/repair/uninstall/settings)
 swift_universal "$APP_MACOS_DIR/ParquetQuickLookAndIndex" \
   -parse-as-library \
   -module-name ParquetQuickLookAndIndex \
   -module-cache-path "$SWIFT_MODULE_CACHE" \
   -O \
+  -import-objc-header "$ZSTD_HEADER" \
   "$ROOT_DIR"/Sources/ParquetCore/*.swift \
   "$ROOT_DIR/preview/app/AppMain.swift" \
+  "$BUILD_DIR/parquet_zstd.o" \
   -framework AppKit \
   -framework Foundation \
   -framework SwiftUI
@@ -156,8 +169,11 @@ swift_universal "$APPEX_MACOS_DIR/ParquetQuickLookExtension" \
   "$ROOT_DIR/Sources/ParquetCore/ParserBounds.swift" \
   "$ROOT_DIR/Sources/ParquetCore/ParquetFooterParser.swift" \
   "$ROOT_DIR/Sources/ParquetCore/ParquetDataset.swift" \
+  -import-objc-header "$ZSTD_HEADER" \
+  "$ROOT_DIR/Sources/ParquetCore/ParquetRowReader.swift" \
   "$ROOT_DIR/preview/extension/PreviewProvider.swift" \
   "$BUILD_DIR/NSExtensionMain.o" \
+  "$BUILD_DIR/parquet_zstd.o" \
   -framework AppKit \
   -framework Foundation \
   -framework QuickLookUI \

@@ -1,3 +1,4 @@
+import Compression
 import CryptoKit
 import Foundation
 
@@ -239,8 +240,10 @@ func runFooterFixtureTests(fixturesDir: String) {
     assertEqual(ParquetFooter.partitions(inDirectoryPath: many).count, ParquetParserBounds.maxPartitionSegments, "partition count is capped")
 
     runFooterDetailTests(fixturesDir: fixturesDir)
+    runRowReaderTests(fixturesDir: fixturesDir)
     runDatasetTests(fixturesDir: fixturesDir)
     runCorruptedFooterTests(fixturesDir: fixturesDir)
+    runCorruptedPageTests(fixturesDir: fixturesDir)
 
     // Malformed footers parse to nothing instead of throwing or trapping.
     let garbage = ParquetFooter.parse(footer: Data([0x19, 0xfc, 0xff, 0xff, 0xff, 0x0f, 0x15, 0x00]))
@@ -287,6 +290,187 @@ private func runFooterDetailTests(fixturesDir: String) {
     let flat = ParquetFooter.read(at: URL(fileURLWithPath: fixturesDir + "/flat.parquet"))
     assertEqual(flat.dateRange?.min, utc("2026-01-01T00:00:00Z"), "flat.parquet: date min (nulls ignored)")
     assertEqual(flat.dateRange?.max, utc("2026-01-02T11:00:00Z"), "flat.parquet: date max (timestamp)")
+}
+
+// rows_*.parquet: row i (1-based) as make_fixtures.R defines it, formatted independently of
+// ParquetRowReader (Foundation date formatting, printf decimals).
+private func expectedRow(_ i: Int) -> [String?] {
+    let utc = TimeZone(identifier: "UTC")!
+    let seconds = DateFormatter()
+    seconds.locale = Locale(identifier: "en_US_POSIX")
+    seconds.timeZone = utc
+    seconds.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let day = DateFormatter()
+    day.locale = Locale(identifier: "en_US_POSIX")
+    day.timeZone = utc
+    day.dateFormat = "yyyy-MM-dd"
+    let base2020 = 1_577_836_800
+    func at(_ s: Int) -> String { seconds.string(from: Date(timeIntervalSince1970: TimeInterval(s))) }
+    return [
+        "\(i)",
+        "\(i * 10_000_000_000)",
+        "\(Double(i) * 0.25)",
+        "\(Float(i) * 0.5)",
+        i % 2 == 0 ? "true" : "false",
+        i % 7 == 0 ? nil : "row-\(i)",
+        i % 11 == 0 ? nil : day.string(from: Date(timeIntervalSince1970: TimeInterval(base2020 + i * 86_400))),
+        at(base2020 + i * 1001 / 1000) + String(format: ".%03d", i * 1001 % 1000),
+        at(base2020 + i) + String(format: ".%06d", i),
+        at(i) + String(format: ".%09d", i),
+        String(format: "%.2f", Double(i) * 1.25),
+        String(format: "%.4f", -Double(i) * 1.5),
+        String(format: "0x%02xab", i % 256),
+        "[\"\(i)\",\"\(i + 1)\"]",
+        "{\"x\":\"\(i)\"}",
+    ]
+}
+
+private func runRowReaderTests(fixturesDir: String) {
+    let columns = ["i32", "i64", "dbl", "flt", "flag", "str", "d", "ts_ms", "ts_us", "ts_ns", "dec", "dec38", "bin", "tags", "pt"]
+    let expected = (1...250).map(expectedRow)
+    // Each codec, dictionary and PLAIN encoding, 3 row groups, several pages per chunk.
+    for file in ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_uncompressed", "rows_plain"] {
+        let t = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet"), maxRows: 1000, maxColumns: 100)
+        assertEqual(t.columns, columns, "\(file): top-level columns")
+        assertEqual(t.totalRows, 250, "\(file): total rows")
+        assertTrue(t.notes.isEmpty, "\(file): no notes, got \(t.notes)")
+        assertEqual(t.rows.count, 250, "\(file): row count")
+        for (r, row) in t.rows.enumerated() where row != expected[r] {
+            assertTrue(false, "\(file): row \(r + 1) is \(row), expected \(expected[r])")
+        }
+    }
+
+    let first = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet"), maxRows: 120, maxColumns: 3)
+    assertEqual(first.rows.count, 120, "maxRows: rows cut across row groups")
+    assertEqual(first.rows.last ?? [], Array(expected[119].prefix(3)), "maxRows: row 120 from the second row group")
+    assertEqual(first.columns, ["i32", "i64", "dbl"], "maxColumns: first columns")
+    assertEqual(first.hiddenColumns, 12, "maxColumns: hidden count")
+
+    let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
+    assertEqual(int96.rows.map { $0[0] }, (1...250).map { expectedRow($0)[8].map { $0 + "000" } }, "INT96 timestamps (ns digits)")
+
+    let flat = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/flat.parquet"), maxRows: 10, maxColumns: 100)
+    assertEqual(flat.rows.count, 3, "flat.parquet: rows")
+    assertEqual(flat.rows[2], ["3", nil, nil, nil, nil, nil, nil], "flat.parquet: nulls in the third row")
+    assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/empty.parquet"), maxRows: 10, maxColumns: 10).rows.isEmpty, "empty.parquet: no rows")
+    assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/truncated.parquet"), maxRows: 10, maxColumns: 10).columns.isEmpty, "truncated.parquet: nothing")
+
+    // Nested values as JSON (leaf values as strings), across three row groups: empty and null
+    // lists, nulls inside lists, lists of structs, maps, nested structs, lists of lists.
+    let nestedRows = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/nested_rows.parquet"), maxRows: 100, maxColumns: 100)
+    assertEqual(nestedRows.columns, ["id", "l_str", "l_struct", "m", "s", "ll"], "nested: columns")
+    assertEqual(nestedRows.nestedColumns, [false, true, true, true, true, true], "nested: flags")
+    assertTrue(nestedRows.notes.isEmpty, "nested: no notes, got \(nestedRows.notes)")
+    let nestedExpected: [[String?]] = [
+        ["1", #"["a","b"]"#, #"[{"a":"1","b":"x"}]"#, #"{"a":"1","b":"2"}"#, #"{"x":"1","inner":{"y":"p"}}"#, #"[["1","2"],["3"]]"#],
+        ["2", "[]", "[]", "{}", #"{"x":"2","inner":{"y":null}}"#, "[]"],
+        ["3", nil, nil, nil, #"{"x":null,"inner":{"y":"q"}}"#, nil],
+        ["4", #"["c",null]"#, #"[{"a":"2","b":"y"},{"a":null,"b":"z"}]"#, #"{"c":null}"#, #"{"x":"4","inner":{"y":"r"}}"#, "[[]]"],
+        ["5", #"["d"]"#, #"[{"a":"3","b":null}]"#, #"{"d":"4"}"#, #"{"x":"5","inner":{"y":"s"}}"#, #"[["4"],null]"#],
+        ["6", nil, nil, nil, #"{"x":"6","inner":{"y":"t"}}"#, nil],
+        ["7", #"["e","f","g"]"#, #"[{"a":"4","b":"w"}]"#, #"{"e":"5","f":"6"}"#, #"{"x":"7","inner":{"y":"u"}}"#, #"[["5","6"]]"#],
+    ]
+    assertEqual(nestedRows.rows.count, 7, "nested: rows")
+    for (r, row) in nestedRows.rows.enumerated() where r < nestedExpected.count && row != nestedExpected[r] {
+        assertTrue(false, "nested: row \(r + 1) is \(row), expected \(nestedExpected[r])")
+    }
+    let nestedFirst = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/nested_rows.parquet"), maxRows: 4, maxColumns: 100)
+    assertEqual(nestedFirst.rows, Array(nestedExpected.prefix(4)), "nested: rows cut inside the second row group")
+
+    // Dataset folders: files in path order, partition keys as columns, rows across files.
+    let fm = FileManager.default
+    let ds = fm.temporaryDirectory.appendingPathComponent("parquet-rows-ds-\(getpid())")
+    defer { try? fm.removeItem(at: ds) }
+    for (year, file) in [("2024", "rows_gzip"), ("2023", "rows_snappy")] {
+        let dir = ds.appendingPathComponent("year=\(year)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.copyItem(atPath: "\(fixturesDir)/\(file).parquet", toPath: dir.appendingPathComponent("part-0.parquet").path)
+    }
+    let dataset = ParquetRowReader.readDataset(at: ds, maxRows: 300, maxColumns: 100, maxFiles: 10, recursive: true)
+    assertEqual(dataset.columns, columns + ["year"], "dataset: columns plus partition key")
+    assertEqual(dataset.rows.count, 300, "dataset: rows across files")
+    assertEqual(dataset.sourceFiles, 2, "dataset: two files read")
+    assertEqual(dataset.totalRows, 500, "dataset: rows in the files read")
+    assertEqual(dataset.rows[0], expected[0] + ["2023"], "dataset: first file in path order (year=2023)")
+    assertEqual(dataset.rows[250], expected[0] + ["2024"], "dataset: second file continues")
+    let one = ParquetRowReader.readDataset(at: ds, maxRows: 10, maxColumns: 100, maxFiles: 10, recursive: true)
+    assertEqual(one.sourceFiles, 1, "dataset: stops after the rows are found")
+
+    // Parquet format 2 from DuckDB: DATA_PAGE_V2, DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY,
+    // BYTE_STREAM_SPLIT (float and double), converted types only, SNAPPY and BROTLI.
+    let dayFormat = DateFormatter()
+    dayFormat.locale = Locale(identifier: "en_US_POSIX")
+    dayFormat.timeZone = TimeZone(identifier: "UTC")
+    dayFormat.dateFormat = "yyyy-MM-dd"
+    for file in ["rows_v2_snappy", "rows_v2_brotli"] {
+        let url = URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet")
+        let t = ParquetRowReader.read(at: url, maxRows: 1000, maxColumns: 100)
+        assertEqual(t.columns, ["i32", "i64", "flt", "s", "str", "d", "tags"], "\(file): columns")
+        assertTrue(t.notes.isEmpty, "\(file): no notes, got \(t.notes)")
+        assertEqual(t.rows.count, 250, "\(file): rows")
+        for (r, row) in t.rows.enumerated() {
+            let i = r + 1
+            let expected: [String?] = [
+                "\(i)", "\(i * 10_000_000_000)", "\(Float(i) * 0.5)", nil,
+                i % 7 == 0 ? nil : "row-\(i)",
+                dayFormat.string(from: Date(timeIntervalSince1970: TimeInterval(1_577_836_800 + i * 86_400))),
+                "[\"\(i)\",\"\(i + 1)\"]",
+            ]
+            var shown = row
+            shown[3] = nil
+            if shown != expected { assertTrue(false, "\(file): row \(i) is \(row), expected \(expected) (s aside)") }
+            assertTrue(abs((Double(row[3] ?? "") ?? .nan) - sin(Double(i))) < 1e-12, "\(file): row \(i) s = sin(i)")
+        }
+        let cut = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100, pageByteLimit: 64)
+        assertTrue(cut.rows.count == 5 && cut.rows.allSatisfy { $0[0] != nil }, "\(file): page starts still read")
+        let types = ParquetFooter.read(at: url).columns.map(\.logicalType)
+        assertEqual(types, ["int32", "int64", "float", "double", "string", "date32[day]", "int32"], "\(file): converted-type labels")
+    }
+
+    // DELTA_BYTE_ARRAY, the specification's example ("axis", "axle", "babble", "babyhood"), encoded
+    // by hand: prefix lengths [0, 2, 0, 3] and suffix lengths [4, 2, 6, 5] as DELTA_BINARY_PACKED
+    // (block 128, 4 miniblocks; first value, min delta -2 (zigzag 3), deltas packed in 3 bits),
+    // then the suffixes "axis" "le" "babble" "yhood".
+    let header: [UInt8] = [0x80, 0x01, 0x04, 0x04]
+    let prefixes: [UInt8] = header + [0x00, 0x03, 3, 0, 0, 0, 0x44, 0x01] + Array(repeating: 0, count: 10)
+    let lengths: [UInt8] = header + [0x08, 0x03, 3, 0, 0, 0, 0x70, 0x00] + Array(repeating: 0, count: 10)
+    let deltaBytes = prefixes + lengths + Array("axisleba".utf8) + Array("bbleyhood".utf8)
+    let words = (try? ParquetRowReader.deltaByteArray(deltaBytes[...], limit: 4)) ?? []
+    assertEqual(words.map { String(decoding: $0, as: UTF8.self) }, ["axis", "axle", "babble", "babyhood"], "DELTA_BYTE_ARRAY spec example")
+    assertEqual((try? ParquetRowReader.deltaBinaryPacked(prefixes[...], limit: nil))?.values ?? [], [0, 2, 0, 3], "DELTA_BINARY_PACKED prefix lengths")
+    assertEqual((try? ParquetRowReader.deltaBinaryPacked(lengths[...], limit: 2))?.values ?? [], [4, 2], "DELTA_BINARY_PACKED limit")
+
+    // Large pages: only their start is decompressed. With a 64-byte limit every page here is
+    // "large", and the first rows still match; with 30 bytes some columns run out and say so.
+    for file in ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_uncompressed", "nested_rows"] {
+        let url = URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet")
+        let full = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100)
+        let cut = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100, pageByteLimit: 64)
+        assertEqual(cut.rows, full.rows, "\(file): first rows from page starts")
+        assertTrue(cut.notes.isEmpty, "\(file): no notes with page starts, got \(cut.notes)")
+    }
+    let tooSmall = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet"), maxRows: 5, maxColumns: 100, pageByteLimit: 30)
+    assertEqual(tooSmall.notes, ["\(ParquetRowReader.tooLargeMessage): d, tags"], "page starts too short: one friendly note")
+    assertEqual(tooSmall.columnNotes.compactMap { $0 }.count, 2, "page starts too short: reasons for d and tags only")
+    assertEqual(tooSmall.columnNotes[6], ParquetRowReader.tooLargeMessage, "page starts too short: reason per column")
+    assertTrue(tooSmall.rows.allSatisfy { $0[6] == ParquetRowReader.unreadablePlaceholder && $0[0] != nil }, "page starts too short: only those columns")
+
+    // The LZ4 prefix decoder against Apple's encoder.
+    let sample = [UInt8]((0..<20_000).map { i in UInt8(truncatingIfNeeded: (i % 97) &* (i % 13) / 3) })
+    var encoded = [UInt8](repeating: 0, count: 40_000)
+    let encodedSize = compression_encode_buffer(&encoded, encoded.count, sample, sample.count, nil, COMPRESSION_LZ4_RAW)
+    assertTrue(encodedSize > 0, "LZ4 sample encodes")
+    for limit in [1, 100, 4096, 19_999, 20_000] {
+        let prefix = try? ParquetRowReader.lz4Block(encoded[..<encodedSize], limit: limit)
+        assertEqual(prefix ?? [], Array(sample.prefix(limit)), "LZ4 prefix of \(limit) bytes")
+    }
+
+    // Nesting levels from the schema.
+    let nested = ParquetFooter.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet")).columns
+    let levels = Dictionary(uniqueKeysWithValues: nested.map { ($0.name, [$0.maxDefinitionLevel, $0.maxRepetitionLevel]) })
+    assertEqual(levels["i32"], [1, 0], "levels: optional top-level column")
+    assertEqual(levels["tags.list.element"], [3, 1], "levels: list<int>")
+    assertEqual(levels["pt.x"], [2, 0], "levels: struct field")
 }
 
 // SplitMix64: a seeded generator, so a failing case can be replayed with PARQUET_FUZZ_SEED.
@@ -360,6 +544,57 @@ private func runCorruptedFooterTests(fixturesDir: String) {
         assertTrue(elapsed < 1.0, "\(label): took \(elapsed)s")
     }
     print("fuzz: \(cases) corrupted footers (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
+}
+
+// Data pages are untrusted too: randomly corrupted pages (footer intact) must not trap or hang
+// the row reader. PARQUET_FUZZ_SEED applies here as well; PARQUET_FUZZ_PAGE_CASES sets the count.
+private func runCorruptedPageTests(fixturesDir: String) {
+    let env = ProcessInfo.processInfo.environment
+    let seed = env["PARQUET_FUZZ_SEED"].flatMap { UInt64($0) } ?? 27
+    let cases = env["PARQUET_FUZZ_PAGE_CASES"].flatMap { Int($0) } ?? 300
+    var rng = SeededGenerator(state: seed ^ 0x25)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-page-fuzz-\(getpid()).parquet")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_plain", "rows_uncompressed", "rows_int96", "nested_rows", "rows_v2_snappy", "rows_v2_brotli"].compactMap { name in
+        guard let data = FileManager.default.contents(atPath: "\(fixturesDir)/\(name).parquet") else { return nil }
+        let b = [UInt8](data)
+        let n = b.count
+        let len = Int(b[n - 8]) | Int(b[n - 7]) << 8 | Int(b[n - 6]) << 16 | Int(b[n - 5]) << 24
+        return (name, b, n - 8 - len)
+    }
+    assertEqual(originals.count, 10, "page fuzz: fixtures readable")
+
+    var slowest = 0.0
+    for i in 0..<cases {
+        let original = originals[Int.random(in: 0..<originals.count, using: &rng)]
+        var bytes = original.bytes
+        let pages = 4..<original.footerStart
+        let mutation = Int.random(in: 0..<3, using: &rng)
+        switch mutation {
+        case 0: // bit flips
+            for _ in 0..<Int.random(in: 1...16, using: &rng) {
+                bytes[Int.random(in: pages, using: &rng)] ^= UInt8(1) << UInt8.random(in: 0..<8, using: &rng)
+            }
+        case 1: // 0xff runs: huge varints, lengths and run headers
+            let start = Int.random(in: pages, using: &rng)
+            for j in start..<min(pages.upperBound, start + Int.random(in: 1...32, using: &rng)) { bytes[j] = 0xff }
+        default: // random bytes over a stretch
+            let start = Int.random(in: pages, using: &rng)
+            for j in start..<min(pages.upperBound, start + Int.random(in: 1...256, using: &rng)) { bytes[j] = UInt8.random(in: 0...255, using: &rng) }
+        }
+        try? Data(bytes).write(to: tmp)
+        let started = Date()
+        // Every other case also cuts large pages, exercising the prefix decoders.
+        let limit = i % 2 == 0 ? ParquetParserBounds.maxPreviewPageBytes : Int.random(in: 16...512, using: &rng)
+        let t = ParquetRowReader.read(at: tmp, maxRows: 250, maxColumns: 100, pageByteLimit: limit)
+        let elapsed = Date().timeIntervalSince(started)
+        slowest = max(slowest, elapsed)
+        let label = "page fuzz seed \(seed) case \(i) (\(original.name), mutation \(mutation))"
+        assertTrue(t.rows.count <= 250 && t.rows.allSatisfy { $0.count == t.columns.count }, "\(label): table shape")
+        assertTrue(elapsed < 2.0, "\(label): took \(elapsed)s")
+    }
+    print("page fuzz: \(cases) corrupted files (seed \(seed)), slowest \(String(format: "%.1f", slowest * 1000)) ms")
 }
 
 private func runSelfUpdateTests() {
@@ -469,6 +704,19 @@ private func runDatasetTests(fixturesDir: String) {
 
     let flatOnly = ParquetDataset.summarize(at: root, maxFiles: 100, recursive: false, maxPartitionValuesPerKey: 25)
     assertTrue(flatOnly == nil, "dataset: non-recursive scan of a partitioned root finds no files")
+
+    // A folder holding two datasets in plain subfolders is not a dataset itself; each subfolder is.
+    let two = fm.temporaryDirectory.appendingPathComponent("parquet-two-datasets-\(getpid())")
+    defer { try? fm.removeItem(at: two) }
+    for (dir, file) in [("a/year=2024", "flat.parquet"), ("b/year=2024", "rowgroups.parquet")] {
+        try? fm.createDirectory(at: two.appendingPathComponent(dir), withIntermediateDirectories: true)
+        try? fm.copyItem(atPath: fixturesDir + "/" + file, toPath: two.appendingPathComponent(dir + "/part-0.parquet").path)
+    }
+    assertTrue(ParquetDataset.summarize(at: two, maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25) == nil, "dataset: two datasets in plain subfolders -> nil")
+    assertTrue(ParquetRowReader.readDataset(at: two, maxRows: 10, maxColumns: 10, maxFiles: 100, recursive: true).columns.isEmpty, "dataset rows: two datasets -> nothing")
+    assertEqual(ParquetDataset.summarize(at: two.appendingPathComponent("a"), maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25)?.validFileCount ?? -1, 1, "dataset: each subfolder is one")
+    assertTrue(!ParquetDataset.isDatasetFile(URL(fileURLWithPath: "/d/=x/f.parquet"), under: URL(fileURLWithPath: "/d")), "dataset: empty partition key is not a partition")
+    assertTrue(ParquetDataset.isDatasetFile(URL(fileURLWithPath: "/d/f.parquet"), under: URL(fileURLWithPath: "/d")), "dataset: file directly in the folder")
 
     let empty = root.appendingPathComponent("empty")
     try? fm.createDirectory(at: empty, withIntermediateDirectories: true)

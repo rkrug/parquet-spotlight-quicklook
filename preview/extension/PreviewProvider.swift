@@ -26,6 +26,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var scanAllFiles = false
         var maxScanFiles = 500
         var recursiveScan = true
+        var showDataTab = true
+        var previewRows = 100
+        var openDataTab = false
     }
 
     private struct PreviewSettingsData: Codable {
@@ -37,6 +40,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let scanAllFiles: Bool
         let maxScanFiles: Int
         let recursiveScan: Bool
+        // Optional: missing in settings written by versions before the Data tab.
+        let showDataTab: Bool?
+        let previewRows: Int?
+        let openDataTab: Bool?
     }
 
     private final class ColumnTreeNode {
@@ -175,7 +182,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 hideListElement: decoded.hideListElement,
                 scanAllFiles: decoded.scanAllFiles,
                 maxScanFiles: max(1, decoded.maxScanFiles),
-                recursiveScan: decoded.recursiveScan
+                recursiveScan: decoded.recursiveScan,
+                showDataTab: decoded.showDataTab ?? true,
+                previewRows: max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows)),
+                openDataTab: decoded.openDataTab ?? false
             )
         }
 
@@ -196,6 +206,12 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             } else {
                 s.recursiveScan = defaults.bool(forKey: "recursiveScan")
             }
+            if defaults.object(forKey: "showDataTab") != nil {
+                s.showDataTab = defaults.bool(forKey: "showDataTab")
+            }
+            let rows = defaults.integer(forKey: "previewRows")
+            if rows > 0 { s.previewRows = min(rows, ParquetParserBounds.maxPreviewRows) }
+            s.openDataTab = defaults.bool(forKey: "openDataTab")
         }
         return s
     }
@@ -609,11 +625,19 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <div class=\"card\"><div class=\"label\">Columns</div><div class=\"val\">\(esc(formatInt(Int64(metadata.columns.count))))</div></div>
           </div>
 
+          \(settings.showDataTab && metadata.valid ? tabBarHTML() : "")
+          <div id=\"tab-schema\">
           <table>
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(rows)</tbody>
           </table>
           \(footerDetailsHTML(metadata))
+          </div>
+          \(settings.showDataTab && metadata.valid ? dataTabHTML(
+              ParquetRowReader.read(at: URL(fileURLWithPath: path), maxRows: settings.previewRows, maxColumns: ParquetParserBounds.maxPreviewColumns),
+              totalRows: metadata.rowCount,
+              settings: settings
+          ) : "")
         </body>
         </html>
         """
@@ -684,6 +708,172 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             html += "<details><summary>Key/value metadata (\(m.keyValueMetadata.count))</summary><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>\(rows)</tbody></table></details>"
         }
         return html
+    }
+
+    // Schema | Data tab buttons plus the styles of both tabs (file and dataset pages).
+    private func tabBarHTML() -> String {
+        """
+          <style>
+            .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
+            .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
+            .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
+            .data-scroll{max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+            table.data{width:auto;min-width:100%}
+            table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
+            table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
+            table.data td.rn{color:#9ca3af;text-align:right}
+            table.data td.null{color:#9ca3af;font-style:italic}
+            table.data td.sel{background:#e0ecff}
+            table.data td.nested{color:#1d4ed8;cursor:pointer}
+            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:320px;overflow:auto}
+            .cell-detail details{margin:0}
+            .cell-detail summary{cursor:pointer}
+            .cell-detail .tree{margin-left:18px}
+            .cell-detail .key{color:#6b7280}
+            .cell-detail .nul{color:#9ca3af;font-style:italic}
+            table.data th.noted{color:#6b7280;cursor:help}
+          </style>
+          <div class=\"tabs\">
+            <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
+            <button id=\"tab-btn-data\" class=\"tab\" onclick=\"showTab('data');return false;\">Data</button>
+          </div>
+        """
+    }
+
+    // Data tab (#25): the first rows as embedded JSON, drawn by JavaScript only for the visible
+    // part of the scroll area, so thousands of rows stay smooth. Quick Look cannot call back into
+    // the extension, so the rows are fixed when the preview is generated.
+    // totalRows: rows in the file or dataset, for the "First n of m rows" line.
+    private func dataTabHTML(_ table: ParquetRowReader.Table, totalRows: Int64, settings: PreviewSettings) -> String {
+        let payload: [String: Any] = [
+            "columns": table.columns,
+            "rows": table.rows.map { row in row.map { cell -> Any in cell ?? NSNull() } },
+            "nested": table.nestedColumns,
+        ]
+        let json = (try? JSONSerialization.data(withJSONObject: payload))
+            .map { String(decoding: $0, as: UTF8.self) }?
+            .replacingOccurrences(of: "</", with: "<\\/") ?? "{\"columns\":[],\"rows\":[]}"
+
+        var info = "First \(formatInt(Int64(table.rows.count))) of \(formatInt(totalRows)) rows"
+        if table.sourceFiles > 1 {
+            info += " (from \(table.sourceFiles) files)"
+        }
+        if table.rows.count < min(settings.previewRows, Int(clamping: totalRows)) && table.notes.isEmpty {
+            info += " (cut to fit \(formatInt(Int64(ParquetParserBounds.maxPreviewCells))) cells)"
+        }
+        if table.hiddenColumns > 0 {
+            info += ", first \(table.columns.count) columns (\(table.hiddenColumns) more not shown)"
+        }
+        info += ". Change the number of rows in Parquet Quick Look and Index (⌘,)."
+        // Columns the preview could not read get ⓘ in the header: the reason as a tooltip and, on
+        // click, in the detail panel. It concerns the preview only, not the file.
+        var header = "<th>#</th>"
+        for (c, name) in table.columns.enumerated() {
+            if c < table.columnNotes.count, let note = table.columnNotes[c] {
+                let reason = "Not shown in this preview: \(note). The file itself is fine."
+                header += "<th class=\"noted\" data-c=\"\(c)\" title=\"\(esc(reason))\">\(esc(name)) ⓘ</th>"
+            } else {
+                header += "<th>\(esc(name))</th>"
+            }
+        }
+
+        return """
+          <div id=\"tab-data\" style=\"display:none\">
+            <div class=\"muted\" style=\"margin-bottom:6px\">\(esc(info))</div>
+            <div id=\"data-scroll\" class=\"data-scroll\">
+              <table class=\"data\"><thead><tr>\(header)</tr></thead><tbody id=\"data-body\"></tbody></table>
+            </div>
+            <div id=\"cell-detail\" class=\"cell-detail muted\">Click a cell to see its full value.</div>
+          </div>
+          <script>
+            (function(){
+              const D = \(json);
+              const H = 24;
+              const box = document.getElementById('data-scroll');
+              const body = document.getElementById('data-body');
+              const n = D.columns.length;
+              const nested = D.nested || [];
+              const parsed = new Map();
+              let selected = null;
+              function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+              // Nested cells hold JSON (lists, structs, maps; leaf values as strings).
+              function value(r, c){
+                const v = D.rows[r][c];
+                if (!nested[c] || v === null) { return v; }
+                const key = r * n + c;
+                if (!parsed.has(key)) { try { parsed.set(key, JSON.parse(v)); } catch (e) { parsed.set(key, v); } }
+                return parsed.get(key);
+              }
+              function brief(v){
+                if (v === null) { return 'null'; }
+                if (Array.isArray(v)) { return '[' + v.map(brief).join(', ') + ']'; }
+                if (typeof v === 'object') { return '{' + Object.keys(v).map(function(k){ return k + ': ' + brief(v[k]); }).join(', ') + '}'; }
+                return String(v);
+              }
+              function tree(v, key, depth){
+                const label = key === null ? '' : '<span class="key">' + esc(key) + ':</span> ';
+                if (v === null) { return '<div>' + label + '<span class="nul">null</span></div>'; }
+                if (typeof v !== 'object') { return '<div>' + label + esc(v) + '</div>'; }
+                const isList = Array.isArray(v);
+                const keys = isList ? v.map(function(_, i){ return String(i); }) : Object.keys(v);
+                const count = isList ? keys.length + ' items' : keys.length + ' fields';
+                if (keys.length === 0) { return '<div>' + label + (isList ? '[]' : '{}') + '</div>'; }
+                return '<details' + (depth < 1 ? ' open' : '') + '><summary>' + label + '<span class="key">' + (isList ? '[' : '{') + count + (isList ? ']' : '}') + '</span></summary><div class="tree">'
+                  + keys.map(function(k){ return tree(v[k], k, depth + 1); }).join('') + '</div></details>';
+              }
+              function render(){
+                const first = Math.max(0, Math.floor(box.scrollTop / H) - 10);
+                const last = Math.min(D.rows.length, first + Math.ceil(box.clientHeight / H) + 30);
+                let html = '<tr><td colspan="' + (n + 1) + '" style="height:' + (first * H) + 'px;padding:0;border:0"></td></tr>';
+                for (let r = first; r < last; r++) {
+                  html += '<tr><td class="rn">' + (r + 1) + '</td>';
+                  const row = D.rows[r];
+                  for (let c = 0; c < n; c++) {
+                    const v = row[c];
+                    const sel = selected && selected[0] === r && selected[1] === c ? ' sel' : '';
+                    const shown = nested[c] && v !== null ? brief(value(r, c)) : v;
+                    html += v === null || v === '\(ParquetRowReader.unreadablePlaceholder)'
+                      ? '<td class="null' + sel + '" data-r="' + r + '" data-c="' + c + '">' + (v === null ? 'null' : v) + '</td>'
+                      : '<td class="' + (nested[c] ? 'nested' : '') + sel + '" data-r="' + r + '" data-c="' + c + '">' + esc(shown.length > 300 ? shown.slice(0, 300) + '…' : shown) + '</td>';
+                  }
+                  html += '</tr>';
+                }
+                html += '<tr><td colspan="' + (n + 1) + '" style="height:' + ((D.rows.length - last) * H) + 'px;padding:0;border:0"></td></tr>';
+                body.innerHTML = html;
+              }
+              box.addEventListener('scroll', render);
+              document.querySelectorAll('#tab-data th.noted').forEach(function(th){
+                th.addEventListener('click', function(){
+                  const detail = document.getElementById('cell-detail');
+                  detail.classList.remove('muted');
+                  detail.textContent = D.columns[+th.dataset.c] + ': ' + th.title;
+                });
+              });
+              body.addEventListener('click', function(e){
+                const td = e.target.closest('td[data-r]');
+                if (!td) { return; }
+                const r = +td.dataset.r, c = +td.dataset.c, v = value(r, c);
+                selected = [r, c];
+                const detail = document.getElementById('cell-detail');
+                detail.classList.remove('muted');
+                if (nested[c] && v !== null && typeof v === 'object') {
+                  detail.innerHTML = '<div class="key">' + esc(D.columns[c]) + ' · row ' + (r + 1) + '</div>' + tree(v, null, 0);
+                } else {
+                  detail.textContent = D.columns[c] + ' · row ' + (r + 1) + ': ' + (v === null ? 'null' : v);
+                }
+                render();
+              });
+              window.showTab = function(name){
+                ['schema', 'data'].forEach(function(t){
+                  document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+                  document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
+                });
+                if (name === 'data') { render(); }
+              };
+              \(settings.openDataTab ? "window.addEventListener('DOMContentLoaded', function(){ window.showTab('data'); });" : "")
+            })();
+          </script>
+        """
     }
 
     private func renderDatasetHTML(path: String, dataset: DatasetMetadata, settings: PreviewSettings) -> String {
@@ -862,6 +1052,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <div class=\"card\"><div class=\"label\">Columns (merged)</div><div class=\"val\">\(esc(formatInt(Int64(dataset.columns.count))))</div></div>
           </div>
           \(notes)
+          \(settings.showDataTab ? tabBarHTML() : "")
+          <div id=\"tab-schema\">
 
           <h2>Hive Partitions</h2>
           <table>
@@ -874,6 +1066,18 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(schemaRows)</tbody>
           </table>
+          </div>
+          \(settings.showDataTab ? dataTabHTML(
+              ParquetRowReader.readDataset(
+                  at: URL(fileURLWithPath: path),
+                  maxRows: settings.previewRows,
+                  maxColumns: ParquetParserBounds.maxPreviewColumns,
+                  maxFiles: settings.scanAllFiles ? Int.max : settings.maxScanFiles,
+                  recursive: settings.recursiveScan
+              ),
+              totalRows: dataset.totalRows,
+              settings: settings
+          ) : "")
         </body>
         </html>
         """
