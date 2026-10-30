@@ -22,6 +22,8 @@ public enum ParquetRowReader {
         public var sourceFiles = 0
         // Per column: cells hold the value as JSON (lists, structs, maps) instead of text.
         public var nestedColumns: [Bool] = []
+        // Per column: why the preview could not read it (its cells are unreadablePlaceholder).
+        public var columnNotes: [String?] = []
     }
 
     public static let nestedPlaceholder = "‹nested›"
@@ -65,8 +67,10 @@ public enum ParquetRowReader {
         let fileSize = summary.fileSize
 
         var cells: [[String?]] = []
+        table.columnNotes = Array(repeating: nil, count: shown.count)
         var problems: [(message: String, columns: [String])] = []
         func note(_ message: String, _ column: String) {
+            if let i = table.columns.firstIndex(of: column) { table.columnNotes[i] = message }
             if let i = problems.firstIndex(where: { $0.message == message }) {
                 problems[i].columns.append(column)
             } else {
@@ -151,6 +155,7 @@ public enum ParquetRowReader {
             for (k, name) in names.enumerated() where !table.columns.contains(name) && table.columns.count < ParquetParserBounds.maxPreviewColumns {
                 table.columns.append(name)
                 table.nestedColumns.append(k < part.nestedColumns.count && part.nestedColumns[k])
+                table.columnNotes.append(k < part.columnNotes.count ? part.columnNotes[k] : nil)
                 for r in table.rows.indices { table.rows[r].append(nil) }
             }
             let slots = names.map { table.columns.firstIndex(of: $0) }

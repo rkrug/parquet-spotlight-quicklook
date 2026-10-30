@@ -727,8 +727,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .cell-detail .tree{margin-left:18px}
             .cell-detail .key{color:#6b7280}
             .cell-detail .nul{color:#9ca3af;font-style:italic}
-            .notes{color:#4b5563;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;margin:6px 0}
-            .notes ul{margin:4px 0 0 18px;padding:0}
+            table.data th.noted{color:#6b7280;cursor:help}
           </style>
           <div class=\"tabs\">
             <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
@@ -762,15 +761,21 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             info += ", first \(table.columns.count) columns (\(table.hiddenColumns) more not shown)"
         }
         info += ". Change the number of rows in Parquet Quick Look and Index (⌘,)."
-        // Problems of the preview only (codec, encoding, size limits), not of the file.
-        let notes = table.notes.isEmpty ? "" : "<div class=\"notes\">ⓘ Some columns are not shown in this preview; the file itself is fine.<ul>"
-            + table.notes.map { "<li>\(esc($0))</li>" }.joined() + "</ul></div>"
-        let header = (["#"] + table.columns).map { "<th>\(esc($0))</th>" }.joined()
+        // Columns the preview could not read get ⓘ in the header: the reason as a tooltip and, on
+        // click, in the detail panel. It concerns the preview only, not the file.
+        var header = "<th>#</th>"
+        for (c, name) in table.columns.enumerated() {
+            if c < table.columnNotes.count, let note = table.columnNotes[c] {
+                let reason = "Not shown in this preview: \(note). The file itself is fine."
+                header += "<th class=\"noted\" data-c=\"\(c)\" title=\"\(esc(reason))\">\(esc(name)) ⓘ</th>"
+            } else {
+                header += "<th>\(esc(name))</th>"
+            }
+        }
 
         return """
           <div id=\"tab-data\" style=\"display:none\">
             <div class=\"muted\" style=\"margin-bottom:6px\">\(esc(info))</div>
-            \(notes)
             <div id=\"data-scroll\" class=\"data-scroll\">
               <table class=\"data\"><thead><tr>\(header)</tr></thead><tbody id=\"data-body\"></tbody></table>
             </div>
@@ -823,8 +828,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                     const v = row[c];
                     const sel = selected && selected[0] === r && selected[1] === c ? ' sel' : '';
                     const shown = nested[c] && v !== null ? brief(value(r, c)) : v;
-                    html += v === null
-                      ? '<td class="null' + sel + '" data-r="' + r + '" data-c="' + c + '">null</td>'
+                    html += v === null || v === '\(ParquetRowReader.unreadablePlaceholder)'
+                      ? '<td class="null' + sel + '" data-r="' + r + '" data-c="' + c + '">' + (v === null ? 'null' : v) + '</td>'
                       : '<td class="' + (nested[c] ? 'nested' : '') + sel + '" data-r="' + r + '" data-c="' + c + '">' + esc(shown.length > 300 ? shown.slice(0, 300) + '…' : shown) + '</td>';
                   }
                   html += '</tr>';
@@ -833,6 +838,13 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 body.innerHTML = html;
               }
               box.addEventListener('scroll', render);
+              document.querySelectorAll('#tab-data th.noted').forEach(function(th){
+                th.addEventListener('click', function(){
+                  const detail = document.getElementById('cell-detail');
+                  detail.classList.remove('muted');
+                  detail.textContent = D.columns[+th.dataset.c] + ': ' + th.title;
+                });
+              });
               body.addEventListener('click', function(e){
                 const td = e.target.closest('td[data-r]');
                 if (!td) { return; }

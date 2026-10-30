@@ -350,6 +350,8 @@ private func runRowReaderTests(fixturesDir: String) {
     assertEqual(zstd.notes.count, 1, "unsupported codec: one grouped note")
     assertTrue(zstd.notes.first?.hasPrefix("ZSTD compression is not supported by the preview yet: i32, i64") ?? false, "unsupported codec: note names the columns")
     assertTrue(zstd.rows.allSatisfy { $0[0] == ParquetRowReader.unreadablePlaceholder && $0[13] == ParquetRowReader.unreadablePlaceholder }, "unsupported codec: placeholders, not nulls")
+    assertEqual(zstd.columnNotes.count, zstd.columns.count, "unsupported codec: one note slot per column")
+    assertEqual(zstd.columnNotes[0], "ZSTD compression is not supported by the preview yet", "unsupported codec: reason per column")
 
     let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
     assertEqual(int96.rows.map { $0[0] }, (1...250).map { expectedRow($0)[8].map { $0 + "000" } }, "INT96 timestamps (ns digits)")
@@ -412,6 +414,7 @@ private func runRowReaderTests(fixturesDir: String) {
     }
     let tooSmall = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet"), maxRows: 5, maxColumns: 100, pageByteLimit: 30)
     assertEqual(tooSmall.notes, ["\(ParquetRowReader.tooLargeMessage): d, tags"], "page starts too short: one friendly note")
+    assertEqual(tooSmall.columnNotes.compactMap { $0 }.count, 2, "page starts too short: reasons for d and tags only")
     assertTrue(tooSmall.rows.allSatisfy { $0[6] == ParquetRowReader.unreadablePlaceholder && $0[0] != nil }, "page starts too short: only those columns")
 
     // The LZ4 prefix decoder against Apple's encoder.
