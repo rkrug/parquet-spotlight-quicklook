@@ -713,7 +713,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
             .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
             .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
-            .data-scroll{max-height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+            .data-scroll{max-height:260px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
             table.data{width:auto;min-width:100%}
             table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
             table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
