@@ -1,3 +1,4 @@
+import Compression
 import CryptoKit
 import Foundation
 
@@ -347,7 +348,7 @@ private func runRowReaderTests(fixturesDir: String) {
 
     let zstd = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_zstd.parquet"), maxRows: 10, maxColumns: 100)
     assertEqual(zstd.notes.count, 1, "unsupported codec: one grouped note")
-    assertTrue(zstd.notes.first?.hasPrefix("codec ZSTD not supported yet: i32, i64") ?? false, "unsupported codec: note names the columns")
+    assertTrue(zstd.notes.first?.hasPrefix("ZSTD compression is not supported by the preview yet: i32, i64") ?? false, "unsupported codec: note names the columns")
     assertTrue(zstd.rows.allSatisfy { $0[0] == ParquetRowReader.unreadablePlaceholder && $0[13] == ParquetRowReader.unreadablePlaceholder }, "unsupported codec: placeholders, not nulls")
 
     let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
@@ -399,6 +400,29 @@ private func runRowReaderTests(fixturesDir: String) {
     assertEqual(dataset.rows[250], expected[0] + ["2024"], "dataset: second file continues")
     let one = ParquetRowReader.readDataset(at: ds, maxRows: 10, maxColumns: 100, maxFiles: 10, recursive: true)
     assertEqual(one.sourceFiles, 1, "dataset: stops after the rows are found")
+
+    // Large pages: only their start is decompressed. With a 64-byte limit every page here is
+    // "large", and the first rows still match; with 30 bytes some columns run out and say so.
+    for file in ["rows_snappy", "rows_gzip", "rows_lz4", "rows_uncompressed", "nested_rows"] {
+        let url = URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet")
+        let full = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100)
+        let cut = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100, pageByteLimit: 64)
+        assertEqual(cut.rows, full.rows, "\(file): first rows from page starts")
+        assertTrue(cut.notes.isEmpty, "\(file): no notes with page starts, got \(cut.notes)")
+    }
+    let tooSmall = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet"), maxRows: 5, maxColumns: 100, pageByteLimit: 30)
+    assertEqual(tooSmall.notes, ["\(ParquetRowReader.tooLargeMessage): d, tags"], "page starts too short: one friendly note")
+    assertTrue(tooSmall.rows.allSatisfy { $0[6] == ParquetRowReader.unreadablePlaceholder && $0[0] != nil }, "page starts too short: only those columns")
+
+    // The LZ4 prefix decoder against Apple's encoder.
+    let sample = [UInt8]((0..<20_000).map { i in UInt8(truncatingIfNeeded: (i % 97) &* (i % 13) / 3) })
+    var encoded = [UInt8](repeating: 0, count: 40_000)
+    let encodedSize = compression_encode_buffer(&encoded, encoded.count, sample, sample.count, nil, COMPRESSION_LZ4_RAW)
+    assertTrue(encodedSize > 0, "LZ4 sample encodes")
+    for limit in [1, 100, 4096, 19_999, 20_000] {
+        let prefix = try? ParquetRowReader.lz4Block(encoded[..<encodedSize], limit: limit)
+        assertEqual(prefix ?? [], Array(sample.prefix(limit)), "LZ4 prefix of \(limit) bytes")
+    }
 
     // Nesting levels from the schema.
     let nested = ParquetFooter.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet")).columns
@@ -520,7 +544,9 @@ private func runCorruptedPageTests(fixturesDir: String) {
         }
         try? Data(bytes).write(to: tmp)
         let started = Date()
-        let t = ParquetRowReader.read(at: tmp, maxRows: 250, maxColumns: 100)
+        // Every other case also cuts large pages, exercising the prefix decoders.
+        let limit = i % 2 == 0 ? ParquetParserBounds.maxPreviewPageBytes : Int.random(in: 16...512, using: &rng)
+        let t = ParquetRowReader.read(at: tmp, maxRows: 250, maxColumns: 100, pageByteLimit: limit)
         let elapsed = Date().timeIntervalSince(started)
         slowest = max(slowest, elapsed)
         let label = "page fuzz seed \(seed) case \(i) (\(original.name), mutation \(mutation))"

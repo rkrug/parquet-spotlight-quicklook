@@ -727,7 +727,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .cell-detail .tree{margin-left:18px}
             .cell-detail .key{color:#6b7280}
             .cell-detail .nul{color:#9ca3af;font-style:italic}
-            .notes{color:#92400e;margin:4px 0}
+            .notes{color:#4b5563;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;margin:6px 0}
+            .notes ul{margin:4px 0 0 18px;padding:0}
           </style>
           <div class=\"tabs\">
             <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
@@ -761,7 +762,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             info += ", first \(table.columns.count) columns (\(table.hiddenColumns) more not shown)"
         }
         info += ". Change the number of rows in Parquet Quick Look and Index (⌘,)."
-        let notes = table.notes.map { "<div class=\"notes\">\(esc($0))</div>" }.joined()
+        // Problems of the preview only (codec, encoding, size limits), not of the file.
+        let notes = table.notes.isEmpty ? "" : "<div class=\"notes\">ⓘ Some columns are not shown in this preview; the file itself is fine.<ul>"
+            + table.notes.map { "<li>\(esc($0))</li>" }.joined() + "</ul></div>"
         let header = (["#"] + table.columns).map { "<th>\(esc($0))</th>" }.joined()
 
         return """

@@ -28,7 +28,9 @@ public enum ParquetRowReader {
     // Cells of a column that could not be read (see notes); distinct from null.
     public static let unreadablePlaceholder = "‹not read›"
 
-    public static func read(at url: URL, maxRows: Int, maxColumns: Int) -> Table {
+    // pageByteLimit: data pages that decompress to more are read from their start only (tests
+    // lower it to exercise that path).
+    public static func read(at url: URL, maxRows: Int, maxColumns: Int, pageByteLimit: Int = ParquetParserBounds.maxPreviewPageBytes) -> Table {
         var table = Table()
         let wanted = max(0, min(maxRows, ParquetParserBounds.maxPreviewRows))
         let summary = ParquetFooter.read(at: url, keepChunksForRows: wanted)
@@ -82,7 +84,7 @@ public enum ParquetRowReader {
                 do {
                     cells.append(try readNestedField(
                         leaves: leaves, indices: field.leaves, groups: summary.previewRowGroups,
-                        rows: rowCount, file: file, fileSize: fileSize
+                        rows: rowCount, file: file, fileSize: fileSize, pageLimit: pageByteLimit
                     ))
                 } catch let error as ReadError {
                     note(error.message, field.name)
@@ -101,7 +103,7 @@ public enum ParquetRowReader {
                     let need = min(rowCount - values.count, Int(clamping: group.rows))
                     values += try readChunk(
                         group.chunks[field.leaves[0]], column: leaf, rows: need,
-                        file: file, fileSize: fileSize
+                        file: file, fileSize: fileSize, pageLimit: pageByteLimit
                     )
                 }
             } catch let error as ReadError {
@@ -171,6 +173,8 @@ public enum ParquetRowReader {
         return table
     }
 
+    static let tooLargeMessage = "the column's pages are too large for the preview"
+
     struct ReadError: Error {
         let message: String
     }
@@ -213,8 +217,11 @@ public enum ParquetRowReader {
             guard header.compressedSize >= 0, bodyStart + header.compressedSize <= bytes.count else {
                 throw ReadError(message: "page extends past the readable part of the column chunk")
             }
-            guard header.uncompressedSize >= 0, header.uncompressedSize <= ParquetParserBounds.maxPreviewPageBytes else {
-                throw ReadError(message: "page larger than \(ParquetParserBounds.maxPreviewPageBytes / (1024 * 1024)) MiB")
+            guard header.uncompressedSize >= 0 else { throw ReadError(message: "invalid page size") }
+            // Data pages over the limit are decoded from their start only (dataPageParts); a
+            // dictionary has to be complete.
+            guard header.type != 2 || header.uncompressedSize <= ParquetParserBounds.maxPreviewPageBytes else {
+                throw ReadError(message: tooLargeMessage)
             }
             let body = bytes[bodyStart..<(bodyStart + header.compressedSize)]
             cursor = bodyStart + header.compressedSize
@@ -235,15 +242,17 @@ public enum ParquetRowReader {
     // Flat column: the first `rows` values, formatted (nil for nulls).
     private static func readChunk(
         _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, rows: Int,
-        file: FileHandle, fileSize: UInt64
+        file: FileHandle, fileSize: UInt64, pageLimit: Int
     ) throws -> [String?] {
         var out: [String?] = []
         guard rows > 0 else { return out }
         try scanChunk(chunk, column: column, file: file, fileSize: fileSize) { header, body, dictionary in
             let need = min(rows - out.count, header.numValues)
-            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: need)
+            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: need, limit: pageLimit)
             let present = page.definitions.map { $0.filter { $0 == column.maxDefinitionLevel }.count } ?? need
-            let decoded = try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            let decoded = try page.decoding {
+                try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            }
             guard decoded.count == present else { throw ReadError(message: "page has fewer values than expected") }
             var next = decoded.makeIterator()
             for i in 0..<need {
@@ -268,7 +277,7 @@ public enum ParquetRowReader {
     // rows, one array per row (a row starts at repetition level 0).
     private static func readRows(
         _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, rows: Int,
-        file: FileHandle, fileSize: UInt64
+        file: FileHandle, fileSize: UInt64, pageLimit: Int
     ) throws -> [[Triple]] {
         var out: [[Triple]] = []
         guard rows > 0 else { return out }
@@ -277,17 +286,28 @@ public enum ParquetRowReader {
                 throw ReadError(message: "page with more than \(ParquetParserBounds.maxPreviewPageValues) values")
             }
             let count = header.numValues
-            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: count)
+            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: count, limit: pageLimit)
             let definitions = page.definitions ?? Array(repeating: column.maxDefinitionLevel, count: count)
             let repetitions = page.repetitions ?? Array(repeating: 0, count: count)
-            let present = definitions.filter { $0 == column.maxDefinitionLevel }.count
-            let decoded = try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            // Only the values of the rows still needed are decoded: up to the start of row rows + 1.
+            var cutoff = count
+            var starts = out.count
+            for i in 0..<count where repetitions[i] == 0 {
+                starts += 1
+                if starts > rows {
+                    cutoff = i
+                    break
+                }
+            }
+            let present = definitions[..<cutoff].filter { $0 == column.maxDefinitionLevel }.count
+            let decoded = try page.decoding {
+                try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            }
             guard decoded.count == present else { throw ReadError(message: "page has fewer values than expected") }
             var next = decoded.makeIterator()
-            for i in 0..<count {
+            for i in 0..<cutoff {
                 let value = definitions[i] == column.maxDefinitionLevel ? next.next() : nil
                 if repetitions[i] == 0 {
-                    if out.count == rows { return false }
                     out.append([])
                 } else if out.isEmpty {
                     throw ReadError(message: "column chunk starts inside a row")
@@ -297,7 +317,7 @@ public enum ParquetRowReader {
                     out[out.count - 1].append(Triple(rep: repetitions[i], def: definitions[i], value: value))
                 }
             }
-            return true
+            return cutoff == count
         }
         return out
     }
@@ -377,12 +397,23 @@ public enum ParquetRowReader {
         let definitions: [Int]?
         let values: ArraySlice<UInt8>
         let encoding: Int64
+        // Only the start of the page was decompressed.
+        var truncated = false
+
+        // On a cut page, running out of data means the rows are beyond the decompressed start.
+        func decoding<T>(_ body: () throws -> T) throws -> T {
+            do {
+                return try body()
+            } catch where truncated {
+                throw ReadError(message: ParquetRowReader.tooLargeMessage)
+            }
+        }
     }
 
     // Splits a data page into repetition levels, definition levels and value bytes. Levels are
     // decoded for the first `count` values only.
     private static func dataPageParts(
-        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, count: Int
+        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, count: Int, limit: Int
     ) throws -> PageParts {
         let repWidth = bitWidth(column.maxRepetitionLevel)
         let defWidth = bitWidth(column.maxDefinitionLevel)
@@ -398,14 +429,17 @@ public enum ParquetRowReader {
                 ? try hybrid(body[defStart..<(defStart + header.definitionLevelsLength)], bitWidth: defWidth, count: count)
                 : nil
             let rest = body[(body.startIndex + levelBytes)...]
+            let valuesSize = header.uncompressedSize - levelBytes
             let values = header.valuesCompressed
-                ? try decompress(rest, codec: codec, size: header.uncompressedSize - levelBytes)[...]
+                ? try decompress(rest, codec: codec, size: valuesSize, limit: limit)[...]
                 : rest
-            return PageParts(repetitions: repetitions, definitions: definitions, values: values, encoding: header.encoding)
+            return PageParts(repetitions: repetitions, definitions: definitions, values: values, encoding: header.encoding,
+                             truncated: header.valuesCompressed && valuesSize > limit)
         }
 
         // DATA_PAGE (v1): everything compressed; each level section has a 4-byte length prefix.
-        let page = try decompress(body, codec: codec, size: header.uncompressedSize)
+        let truncated = header.uncompressedSize > limit
+        let page = try decompress(body, codec: codec, size: header.uncompressedSize, limit: limit)
         var position = 0
         func levels(width: Int) throws -> [Int] {
             let length = try littleEndian32(page[...], at: position)
@@ -413,13 +447,14 @@ public enum ParquetRowReader {
             defer { position += 4 + length }
             return try hybrid(page[(position + 4)..<(position + 4 + length)], bitWidth: width, count: count)
         }
-        let repetitions = column.maxRepetitionLevel > 0 ? try levels(width: repWidth) : nil
-        var definitions: [Int]?
-        if column.maxDefinitionLevel > 0 {
-            guard header.definitionEncoding == 3 else { throw ReadError(message: "unsupported definition level encoding") }
-            definitions = try levels(width: defWidth)
+        guard column.maxDefinitionLevel == 0 || header.definitionEncoding == 3 else {
+            throw ReadError(message: "unsupported definition level encoding")
         }
-        return PageParts(repetitions: repetitions, definitions: definitions, values: page[position...], encoding: header.encoding)
+        var parts = PageParts(repetitions: nil, definitions: nil, values: [], encoding: header.encoding, truncated: truncated)
+        let repetitions = column.maxRepetitionLevel > 0 ? try parts.decoding { try levels(width: repWidth) } : nil
+        let definitions = column.maxDefinitionLevel > 0 ? try parts.decoding { try levels(width: defWidth) } : nil
+        parts = PageParts(repetitions: repetitions, definitions: definitions, values: page[position...], encoding: header.encoding, truncated: truncated)
+        return parts
     }
 
     private static func bitWidth(_ maxLevel: Int) -> Int {
@@ -440,7 +475,7 @@ public enum ParquetRowReader {
     // and leaf values as strings; nil when the field is null in that row.
     private static func readNestedField(
         leaves: [ParquetFooter.Column], indices: [Int], groups: [ParquetFooter.PreviewRowGroup],
-        rows: Int, file: FileHandle, fileSize: UInt64
+        rows: Int, file: FileHandle, fileSize: UInt64, pageLimit: Int
     ) throws -> [String?] {
         var perLeaf: [[[Triple]]] = []
         for (leaf, index) in zip(leaves, indices) {
@@ -448,7 +483,7 @@ public enum ParquetRowReader {
             for group in groups where leafRows.count < rows {
                 guard index < group.chunks.count else { break }
                 let need = min(rows - leafRows.count, Int(clamping: group.rows))
-                leafRows += try readRows(group.chunks[index], column: leaf, rows: need, file: file, fileSize: fileSize)
+                leafRows += try readRows(group.chunks[index], column: leaf, rows: need, file: file, fileSize: fileSize, pageLimit: pageLimit)
             }
             perLeaf.append(leafRows)
         }
@@ -664,7 +699,7 @@ public enum ParquetRowReader {
             let start = bytes.startIndex + 4
             return try hybrid(bytes[start..<(start + length)], bitWidth: 1, count: count).map { .bool($0 != 0) }
         default:
-            throw ReadError(message: "encoding \(encodingName(encoding)) not supported yet")
+            throw ReadError(message: "\(encodingName(encoding)) encoding is not supported by the preview yet")
         }
     }
 
@@ -676,7 +711,7 @@ public enum ParquetRowReader {
         case 6: return "DELTA_LENGTH_BYTE_ARRAY"
         case 7: return "DELTA_BYTE_ARRAY"
         case 9: return "BYTE_STREAM_SPLIT"
-        default: return "\(encoding)"
+        default: return "encoding \(encoding)"
         }
     }
 
@@ -782,8 +817,31 @@ public enum ParquetRowReader {
 
     // MARK: - Codecs
 
-    private static func decompress(_ input: ArraySlice<UInt8>, codec: Int64, size: Int) throws -> [UInt8] {
-        guard size >= 0, size <= ParquetParserBounds.maxPreviewPageBytes else { throw ReadError(message: "invalid page size") }
+    // The whole page when it is at most `limit` bytes; otherwise only its first `limit` bytes,
+    // which hold the levels and the first values (enough for the first rows).
+    private static func decompress(_ input: ArraySlice<UInt8>, codec: Int64, size: Int, limit: Int = ParquetParserBounds.maxPreviewPageBytes) throws -> [UInt8] {
+        guard size >= 0 else { throw ReadError(message: "invalid page size") }
+        guard size > limit else { return try decompressAll(input, codec: codec, size: size) }
+        switch codec {
+        case 0:
+            guard input.count == size else { throw ReadError(message: "page size mismatch") }
+            return Array(input.prefix(limit))
+        case 1:
+            return try snappy(input, size: size, limit: limit)
+        case 2:
+            return try applePrefix(try gzipDeflateBody(input), algorithm: COMPRESSION_ZLIB, limit: limit)
+        case 4:
+            return try applePrefix(input, algorithm: COMPRESSION_BROTLI, limit: limit)
+        case 5:
+            return try hadoopLZ4(input, size: size, limit: limit)
+        case 7:
+            return try lz4Block(input, limit: limit)
+        default:
+            throw ReadError(message: unsupportedCodec(codec))
+        }
+    }
+
+    private static func decompressAll(_ input: ArraySlice<UInt8>, codec: Int64, size: Int) throws -> [UInt8] {
         switch codec {
         case 0: // UNCOMPRESSED
             guard input.count == size else { throw ReadError(message: "page size mismatch") }
@@ -795,20 +853,22 @@ public enum ParquetRowReader {
         case 4:
             return try apple(input, algorithm: COMPRESSION_BROTLI, size: size)
         case 5:
-            return try hadoopLZ4(input, size: size)
+            return try hadoopLZ4(input, size: size, limit: size)
         case 7:
             return try apple(input, algorithm: COMPRESSION_LZ4_RAW, size: size)
         default:
-            throw ReadError(message: "codec \(codecName(codec)) not supported yet")
+            throw ReadError(message: unsupportedCodec(codec))
         }
     }
 
-    private static func codecName(_ codec: Int64) -> String {
+    private static func unsupportedCodec(_ codec: Int64) -> String {
+        let name: String
         switch codec {
-        case 3: return "LZO"
-        case 6: return "ZSTD"
-        default: return "\(codec)"
+        case 3: name = "LZO"
+        case 6: name = "ZSTD"
+        default: name = "codec \(codec)"
         }
+        return "\(name) compression is not supported by the preview yet"
     }
 
     // Apple's Compression framework; the output must be exactly `size` bytes.
@@ -821,6 +881,31 @@ public enum ParquetRowReader {
             }
         }
         guard written == size else { throw ReadError(message: "could not decompress a page") }
+        return out
+    }
+
+    // Streaming decode into a `limit`-byte buffer: stops once it is full.
+    private static func applePrefix(_ input: ArraySlice<UInt8>, algorithm: compression_algorithm, limit: Int) throws -> [UInt8] {
+        guard limit > 0, !input.isEmpty else { return [] }
+        let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { stream.deallocate() }
+        guard compression_stream_init(stream, COMPRESSION_STREAM_DECODE, algorithm) == COMPRESSION_STATUS_OK else {
+            throw ReadError(message: "could not decompress a page")
+        }
+        defer { compression_stream_destroy(stream) }
+        var out = [UInt8](repeating: 0, count: limit)
+        let status = input.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst in
+                stream.pointee.src_ptr = src.baseAddress!
+                stream.pointee.src_size = src.count
+                stream.pointee.dst_ptr = dst.baseAddress!
+                stream.pointee.dst_size = limit
+                return compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+            }
+        }
+        let written = limit - stream.pointee.dst_size
+        // Not every algorithm can stop partway; then the page is simply too large to preview.
+        guard status != COMPRESSION_STATUS_ERROR, written == limit else { throw ReadError(message: tooLargeMessage) }
         return out
     }
 
@@ -848,24 +933,76 @@ public enum ParquetRowReader {
 
     // Hadoop framing used by the legacy LZ4 codec: [uncompressed BE32][compressed BE32][block]...;
     // some writers wrote raw LZ4 blocks under this codec instead.
-    private static func hadoopLZ4(_ input: ArraySlice<UInt8>, size: Int) throws -> [UInt8] {
+    // Decodes blocks until `limit` bytes (all of them when limit == size).
+    private static func hadoopLZ4(_ input: ArraySlice<UInt8>, size: Int, limit: Int) throws -> [UInt8] {
         func be(_ p: Int) -> Int { Int(input[p]) << 24 | Int(input[p + 1]) << 16 | Int(input[p + 2]) << 8 | Int(input[p + 3]) }
+        func raw() throws -> [UInt8] {
+            limit < size
+                ? try lz4Block(input, limit: limit)
+                : try apple(input, algorithm: COMPRESSION_LZ4_RAW, size: size)
+        }
         var out: [UInt8] = []
         var p = input.startIndex
-        while p + 8 <= input.endIndex, out.count < size {
+        while p + 8 <= input.endIndex, out.count < limit {
             let blockSize = be(p), compressed = be(p + 4)
             guard blockSize > 0, blockSize <= size - out.count, compressed > 0, compressed <= input.endIndex - p - 8 else {
-                return try apple(input, algorithm: COMPRESSION_LZ4_RAW, size: size)
+                return try raw()
             }
-            out += try apple(input[(p + 8)..<(p + 8 + compressed)], algorithm: COMPRESSION_LZ4_RAW, size: blockSize)
+            let block = input[(p + 8)..<(p + 8 + compressed)]
+            let need = limit - out.count
+            out += blockSize <= need
+                ? try apple(block, algorithm: COMPRESSION_LZ4_RAW, size: blockSize)
+                : try lz4Block(block, limit: need)
             p += 8 + compressed
         }
-        guard out.count == size, p == input.endIndex else { return try apple(input, algorithm: COMPRESSION_LZ4_RAW, size: size) }
+        if limit < size { return out.count == limit ? out : try raw() }
+        guard out.count == size, p == input.endIndex else { return try raw() }
         return out
     }
 
-    // Snappy block format: varint length, then literals and back-references.
-    static func snappy(_ input: ArraySlice<UInt8>, size: Int) throws -> [UInt8] {
+    // LZ4 block format, for the start of a large page (Apple's streaming API cannot stop inside
+    // an LZ4 block): sequences of literals and back-references, decoded until `limit` bytes.
+    static func lz4Block(_ input: ArraySlice<UInt8>, limit: Int) throws -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(limit)
+        var p = input.startIndex
+        let end = input.endIndex
+        func length(_ base: Int) throws -> Int {
+            var n = base
+            guard base == 15 else { return n }
+            while true {
+                guard p < end else { throw ReadError(message: "invalid LZ4 page") }
+                let b = Int(input[p])
+                p += 1
+                n += b
+                guard n <= ParquetParserBounds.maxPreviewPageBytes * 64 else { throw ReadError(message: "invalid LZ4 page") }
+                if b != 255 { return n }
+            }
+        }
+        while p < end, out.count < limit {
+            let token = Int(input[p])
+            p += 1
+            let literals = try length(token >> 4)
+            guard literals <= end - p else { throw ReadError(message: "invalid LZ4 page") }
+            out += input[p..<(p + min(literals, limit - out.count))]
+            p += literals
+            if p >= end || out.count >= limit { break } // the last sequence has literals only
+            guard end - p >= 2 else { throw ReadError(message: "invalid LZ4 page") }
+            let offset = Int(input[p]) | Int(input[p + 1]) << 8
+            p += 2
+            let match = try length(token & 15) + 4
+            guard offset > 0, offset <= out.count else { throw ReadError(message: "invalid LZ4 page") }
+            let from = out.count - offset
+            for k in 0..<min(match, limit - out.count) { out.append(out[from + k]) }
+        }
+        guard out.count >= limit else { throw ReadError(message: "invalid LZ4 page") }
+        return out
+    }
+
+    // Snappy block format: varint length, then literals and back-references. Stops after
+    // `limit` bytes (the whole block by default).
+    static func snappy(_ input: ArraySlice<UInt8>, size: Int, limit: Int? = nil) throws -> [UInt8] {
+        let target = min(size, limit ?? size)
         var p = input.startIndex
         let end = input.endIndex
         var length = 0
@@ -880,12 +1017,12 @@ public enum ParquetRowReader {
         }
         guard length == size else { throw ReadError(message: "Snappy page size mismatch") }
         var out: [UInt8] = []
-        out.reserveCapacity(size)
+        out.reserveCapacity(target)
         func byte(_ i: Int) throws -> Int {
             guard i < end else { throw ReadError(message: "invalid Snappy page") }
             return Int(input[i])
         }
-        while p < end {
+        while p < end, out.count < target {
             let tag = input[p]
             p += 1
             var copyLength = 0
@@ -921,8 +1058,8 @@ public enum ParquetRowReader {
             let from = out.count - offset
             for k in 0..<copyLength { out.append(out[from + k]) }
         }
-        guard out.count == size else { throw ReadError(message: "Snappy page size mismatch") }
-        return out
+        guard out.count >= target else { throw ReadError(message: "Snappy page size mismatch") }
+        return out.count == target ? out : Array(out.prefix(target))
     }
 
     // MARK: - Formatting
