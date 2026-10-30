@@ -108,8 +108,17 @@ private final class AppModel: ObservableObject {
     @Published var showDataTab = true
     @Published var previewRows = 100
     @Published var openDataTab = false
-    @Published var autoCheckUpdates = true
-    @Published var updateCheckInterval: UpdateCheckInterval = .daily
+    // Update settings are saved on change: the Updates pane has no Apply button.
+    @Published var autoCheckUpdates = true {
+        didSet {
+            (UserDefaults(suiteName: SettingsKeys.suite) ?? .standard).set(autoCheckUpdates, forKey: SettingsKeys.autoCheckUpdates)
+        }
+    }
+    @Published var updateCheckInterval: UpdateCheckInterval = .daily {
+        didSet {
+            (UserDefaults(suiteName: SettingsKeys.suite) ?? .standard).set(updateCheckInterval.rawValue, forKey: SettingsKeys.updateCheckInterval)
+        }
+    }
     // Saved on change: the update check reads it even if settings are never applied.
     @Published var updateChannel: ParquetUpdateChannel = .stable {
         didSet {
@@ -192,6 +201,7 @@ private final class AppModel: ObservableObject {
             showDataTab = decoded.showDataTab ?? true
             previewRows = max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows))
             openDataTab = decoded.openDataTab ?? false
+            loadUpdateSettings()
             return
         }
 
@@ -205,12 +215,6 @@ private final class AppModel: ObservableObject {
             defaults.set(false, forKey: SettingsKeys.scanAllFiles)
             defaults.set(500, forKey: SettingsKeys.maxScanFiles)
             defaults.set(true, forKey: SettingsKeys.recursiveScan)
-        }
-        if defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil {
-            defaults.set(true, forKey: SettingsKeys.autoCheckUpdates)
-        }
-        if defaults.object(forKey: SettingsKeys.updateCheckInterval) == nil {
-            defaults.set(UpdateCheckInterval.daily.rawValue, forKey: SettingsKeys.updateCheckInterval)
         }
         expandDepth = defaults.integer(forKey: SettingsKeys.expandDepth)
         showAllColumns = defaults.bool(forKey: SettingsKeys.showAllColumns)
@@ -230,17 +234,18 @@ private final class AppModel: ObservableObject {
         let rows = defaults.integer(forKey: SettingsKeys.previewRows)
         previewRows = rows > 0 ? min(rows, ParquetParserBounds.maxPreviewRows) : 100
         openDataTab = defaults.bool(forKey: SettingsKeys.openDataTab)
-        if defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil {
-            autoCheckUpdates = true
-        } else {
-            autoCheckUpdates = defaults.bool(forKey: SettingsKeys.autoCheckUpdates)
-        }
-        if let raw = defaults.string(forKey: SettingsKeys.updateCheckInterval),
-           let interval = UpdateCheckInterval(rawValue: raw) {
-            updateCheckInterval = interval
-        } else {
-            updateCheckInterval = .daily
-        }
+        loadUpdateSettings()
+    }
+
+    // Update settings live only in UserDefaults, so they load whether or not the preview
+    // settings come from the settings file (that path returned early and reset them).
+    private func loadUpdateSettings() {
+        let defaults = UserDefaults(suiteName: SettingsKeys.suite) ?? .standard
+        autoCheckUpdates = defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil
+            ? true
+            : defaults.bool(forKey: SettingsKeys.autoCheckUpdates)
+        updateCheckInterval = defaults.string(forKey: SettingsKeys.updateCheckInterval)
+            .flatMap(UpdateCheckInterval.init(rawValue:)) ?? .daily
         updateChannel = defaults.string(forKey: SettingsKeys.updateChannel).flatMap(ParquetUpdateChannel.init(rawValue:)) ?? .stable
     }
 

@@ -8,6 +8,7 @@
 - Nested values (lists, structs, maps) appear as `[a, b]` or `{x: 1}`; click one to open it as a tree.
 - All common compressions are read (SNAPPY, ZSTD, GZIP, LZ4, BROTLI), and columns with very large pages are read from the start of each page.
 - All Parquet encodings in use are read, including the newer ones from Spark and DuckDB (DELTA, BYTE_STREAM_SPLIT). If a column still cannot be shown, its header has an ⓘ: hover or click it for the reason. Only the preview is affected, not the file.
+- The update settings (automatic checks, interval, release channel) are kept across launches in all cases.
 - Column types are shown correctly for files that store only the older type annotations (e.g. some DuckDB files showed dates as decimals).
 - A folder that contains several datasets in subfolders no longer shows a (merged, incomplete) dataset preview; open the dataset folders themselves.
 
