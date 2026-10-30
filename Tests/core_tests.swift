@@ -616,6 +616,19 @@ private func runDatasetTests(fixturesDir: String) {
     let flatOnly = ParquetDataset.summarize(at: root, maxFiles: 100, recursive: false, maxPartitionValuesPerKey: 25)
     assertTrue(flatOnly == nil, "dataset: non-recursive scan of a partitioned root finds no files")
 
+    // A folder holding two datasets in plain subfolders is not a dataset itself; each subfolder is.
+    let two = fm.temporaryDirectory.appendingPathComponent("parquet-two-datasets-\(getpid())")
+    defer { try? fm.removeItem(at: two) }
+    for (dir, file) in [("a/year=2024", "flat.parquet"), ("b/year=2024", "rowgroups.parquet")] {
+        try? fm.createDirectory(at: two.appendingPathComponent(dir), withIntermediateDirectories: true)
+        try? fm.copyItem(atPath: fixturesDir + "/" + file, toPath: two.appendingPathComponent(dir + "/part-0.parquet").path)
+    }
+    assertTrue(ParquetDataset.summarize(at: two, maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25) == nil, "dataset: two datasets in plain subfolders -> nil")
+    assertTrue(ParquetRowReader.readDataset(at: two, maxRows: 10, maxColumns: 10, maxFiles: 100, recursive: true).columns.isEmpty, "dataset rows: two datasets -> nothing")
+    assertEqual(ParquetDataset.summarize(at: two.appendingPathComponent("a"), maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25)?.validFileCount ?? -1, 1, "dataset: each subfolder is one")
+    assertTrue(!ParquetDataset.isDatasetFile(URL(fileURLWithPath: "/d/=x/f.parquet"), under: URL(fileURLWithPath: "/d")), "dataset: empty partition key is not a partition")
+    assertTrue(ParquetDataset.isDatasetFile(URL(fileURLWithPath: "/d/f.parquet"), under: URL(fileURLWithPath: "/d")), "dataset: file directly in the folder")
+
     let empty = root.appendingPathComponent("empty")
     try? fm.createDirectory(at: empty, withIntermediateDirectories: true)
     assertTrue(ParquetDataset.summarize(at: empty, maxFiles: 100, recursive: true, maxPartitionValuesPerKey: 25) == nil, "dataset: no parquet files -> nil")

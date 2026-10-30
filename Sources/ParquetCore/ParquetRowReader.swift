@@ -108,6 +108,8 @@ public enum ParquetRowReader {
         var files: [URL] = []
         if let enumerator = FileManager().enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: options) {
             for case let url as URL in enumerator where url.pathExtension.lowercased() == "parquet" {
+                // Same rule as ParquetDataset.summarize: not one dataset, no rows.
+                guard ParquetDataset.isDatasetFile(url, under: folder) else { return Table() }
                 files.append(url)
                 if files.count >= max(1, maxFiles) { break }
             }

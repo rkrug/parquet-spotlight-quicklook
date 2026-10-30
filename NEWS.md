@@ -4,7 +4,8 @@
 
 ### Changes
 
-- Quick Look has a `Data` tab with the first rows of the file (100 by default, up to 10,000, set in the app's Quick Look Settings). For dataset folders it shows the first rows across the files, with partition keys (e.g. `year`) as columns. Nested columns and ZSTD-compressed files are not shown yet.
+- Quick Look has a `Data` tab with the first rows of the file (100 by default, up to 10,000, set in the app's Quick Look Settings). For dataset folders it shows the first rows across the files, with partition keys (e.g. `year`) as columns.
+- A folder that contains several datasets in subfolders no longer shows a (merged, incomplete) dataset preview; open the dataset folders themselves. Nested columns and ZSTD-compressed files are not shown yet.
 
 ## 0.7.2-beta.1 - 2026-10-30 (pre-release)
 
