@@ -108,7 +108,7 @@ public enum ParquetDataset {
     }
 
     // Partitions between the dataset root and the file; folders above the root are ignored.
-    private static func partitions(of fileURL: URL, under baseFolder: URL) -> [(key: String, value: String)] {
+    static func partitions(of fileURL: URL, under baseFolder: URL) -> [(key: String, value: String)] {
         let basePath = baseFolder.standardizedFileURL.path
         let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
         guard parentPath.hasPrefix(basePath) else {

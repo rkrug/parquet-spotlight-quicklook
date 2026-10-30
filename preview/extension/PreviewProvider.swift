@@ -510,18 +510,6 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .export-actions{margin-top:8px;display:flex;gap:8px}
             .sub-btn{border:1px solid #cbd5e1;background:#fff;color:#111827;border-radius:6px;padding:5px 8px;font-size:11px;cursor:pointer}
             .sub-btn:hover{background:#f3f4f6}
-            .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
-            .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
-            .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
-            .data-scroll{height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
-            table.data{width:auto;min-width:100%}
-            table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
-            table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
-            table.data td.rn{color:#9ca3af;text-align:right}
-            table.data td.null{color:#9ca3af;font-style:italic}
-            table.data td.sel{background:#e0ecff}
-            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
-            .notes{color:#92400e;margin:4px 0}
             h2{font-size:15px;margin:22px 0 8px}
             details{margin:10px 0}
             summary{cursor:pointer;font-weight:600;padding:4px 0}
@@ -633,12 +621,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <div class=\"card\"><div class=\"label\">Columns</div><div class=\"val\">\(esc(formatInt(Int64(metadata.columns.count))))</div></div>
           </div>
 
-          \(settings.showDataTab && metadata.valid ? """
-          <div class=\"tabs\">
-            <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
-            <button id=\"tab-btn-data\" class=\"tab\" onclick=\"showTab('data');return false;\">Data</button>
-          </div>
-          """ : "")
+          \(settings.showDataTab && metadata.valid ? tabBarHTML() : "")
           <div id=\"tab-schema\">
           <table>
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
@@ -646,7 +629,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           </table>
           \(footerDetailsHTML(metadata))
           </div>
-          \(settings.showDataTab && metadata.valid ? dataTabHTML(path: path, settings: settings) : "")
+          \(settings.showDataTab && metadata.valid ? dataTabHTML(
+              ParquetRowReader.read(at: URL(fileURLWithPath: path), maxRows: settings.previewRows, maxColumns: ParquetParserBounds.maxPreviewColumns),
+              totalRows: metadata.rowCount,
+              settings: settings
+          ) : "")
         </body>
         </html>
         """
@@ -719,15 +706,35 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         return html
     }
 
+    // Schema | Data tab buttons plus the styles of both tabs (file and dataset pages).
+    private func tabBarHTML() -> String {
+        """
+          <style>
+            .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
+            .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
+            .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
+            .data-scroll{height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+            table.data{width:auto;min-width:100%}
+            table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
+            table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
+            table.data td.rn{color:#9ca3af;text-align:right}
+            table.data td.null{color:#9ca3af;font-style:italic}
+            table.data td.sel{background:#e0ecff}
+            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
+            .notes{color:#92400e;margin:4px 0}
+          </style>
+          <div class=\"tabs\">
+            <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
+            <button id=\"tab-btn-data\" class=\"tab\" onclick=\"showTab('data');return false;\">Data</button>
+          </div>
+        """
+    }
+
     // Data tab (#25): the first rows as embedded JSON, drawn by JavaScript only for the visible
     // part of the scroll area, so thousands of rows stay smooth. Quick Look cannot call back into
     // the extension, so the rows are fixed when the preview is generated.
-    private func dataTabHTML(path: String, settings: PreviewSettings) -> String {
-        let table = ParquetRowReader.read(
-            at: URL(fileURLWithPath: path),
-            maxRows: settings.previewRows,
-            maxColumns: ParquetParserBounds.maxPreviewColumns
-        )
+    // totalRows: rows in the file or dataset, for the "First n of m rows" line.
+    private func dataTabHTML(_ table: ParquetRowReader.Table, totalRows: Int64, settings: PreviewSettings) -> String {
         let payload: [String: Any] = [
             "columns": table.columns,
             "rows": table.rows.map { row in row.map { cell -> Any in cell ?? NSNull() } },
@@ -736,8 +743,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .map { String(decoding: $0, as: UTF8.self) }?
             .replacingOccurrences(of: "</", with: "<\\/") ?? "{\"columns\":[],\"rows\":[]}"
 
-        var info = "First \(formatInt(Int64(table.rows.count))) of \(formatInt(table.totalRows)) rows"
-        if table.rows.count < min(settings.previewRows, Int(clamping: table.totalRows)) {
+        var info = "First \(formatInt(Int64(table.rows.count))) of \(formatInt(totalRows)) rows"
+        if table.sourceFiles > 1 {
+            info += " (from \(table.sourceFiles) files)"
+        }
+        if table.rows.count < min(settings.previewRows, Int(clamping: totalRows)) && table.notes.isEmpty {
             info += " (cut to fit \(formatInt(Int64(ParquetParserBounds.maxPreviewCells))) cells)"
         }
         if table.hiddenColumns > 0 {
@@ -983,6 +993,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <div class=\"card\"><div class=\"label\">Columns (merged)</div><div class=\"val\">\(esc(formatInt(Int64(dataset.columns.count))))</div></div>
           </div>
           \(notes)
+          \(settings.showDataTab ? tabBarHTML() : "")
+          <div id=\"tab-schema\">
 
           <h2>Hive Partitions</h2>
           <table>
@@ -995,6 +1007,18 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(schemaRows)</tbody>
           </table>
+          </div>
+          \(settings.showDataTab ? dataTabHTML(
+              ParquetRowReader.readDataset(
+                  at: URL(fileURLWithPath: path),
+                  maxRows: settings.previewRows,
+                  maxColumns: ParquetParserBounds.maxPreviewColumns,
+                  maxFiles: settings.scanAllFiles ? Int.max : settings.maxScanFiles,
+                  recursive: settings.recursiveScan
+              ),
+              totalRows: dataset.totalRows,
+              settings: settings
+          ) : "")
         </body>
         </html>
         """

@@ -359,6 +359,25 @@ private func runRowReaderTests(fixturesDir: String) {
     assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/empty.parquet"), maxRows: 10, maxColumns: 10).rows.isEmpty, "empty.parquet: no rows")
     assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/truncated.parquet"), maxRows: 10, maxColumns: 10).columns.isEmpty, "truncated.parquet: nothing")
 
+    // Dataset folders: files in path order, partition keys as columns, rows across files.
+    let fm = FileManager.default
+    let ds = fm.temporaryDirectory.appendingPathComponent("parquet-rows-ds-\(getpid())")
+    defer { try? fm.removeItem(at: ds) }
+    for (year, file) in [("2024", "rows_gzip"), ("2023", "rows_snappy")] {
+        let dir = ds.appendingPathComponent("year=\(year)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.copyItem(atPath: "\(fixturesDir)/\(file).parquet", toPath: dir.appendingPathComponent("part-0.parquet").path)
+    }
+    let dataset = ParquetRowReader.readDataset(at: ds, maxRows: 300, maxColumns: 100, maxFiles: 10, recursive: true)
+    assertEqual(dataset.columns, columns + ["year"], "dataset: columns plus partition key")
+    assertEqual(dataset.rows.count, 300, "dataset: rows across files")
+    assertEqual(dataset.sourceFiles, 2, "dataset: two files read")
+    assertEqual(dataset.totalRows, 500, "dataset: rows in the files read")
+    assertEqual(dataset.rows[0], expected[0] + ["2023"], "dataset: first file in path order (year=2023)")
+    assertEqual(dataset.rows[250], expected[0] + ["2024"], "dataset: second file continues")
+    let one = ParquetRowReader.readDataset(at: ds, maxRows: 10, maxColumns: 100, maxFiles: 10, recursive: true)
+    assertEqual(one.sourceFiles, 1, "dataset: stops after the rows are found")
+
     // Nesting levels from the schema.
     let nested = ParquetFooter.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_snappy.parquet")).columns
     let levels = Dictionary(uniqueKeysWithValues: nested.map { ($0.name, [$0.maxDefinitionLevel, $0.maxRepetitionLevel]) })

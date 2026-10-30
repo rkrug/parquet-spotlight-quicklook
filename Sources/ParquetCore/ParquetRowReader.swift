@@ -18,6 +18,8 @@ public enum ParquetRowReader {
         public var totalRows: Int64 = 0
         // Columns left out because of maxColumns.
         public var hiddenColumns = 0
+        // Files the rows come from (datasets; 1 for a single file).
+        public var sourceFiles = 0
     }
 
     public static let nestedPlaceholder = "‹nested›"
@@ -92,7 +94,55 @@ public enum ParquetRowReader {
         }
 
         table.rows = (0..<rowCount).map { r in cells.map { $0[r] } }
+        table.sourceFiles = 1
         table.notes = problems.map { "\($0.message): \($0.columns.joined(separator: ", "))" }
+        return table
+    }
+
+    // First rows of a dataset folder: its .parquet files in path order, until maxRows rows.
+    // Columns are matched by name across files (missing ones are null); hive partition keys
+    // from the folder names become columns too. Notes are merged across files.
+    public static func readDataset(at folder: URL, maxRows: Int, maxColumns: Int, maxFiles: Int, recursive: Bool) -> Table {
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
+        if !recursive { options.insert(.skipsSubdirectoryDescendants) }
+        var files: [URL] = []
+        if let enumerator = FileManager().enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: options) {
+            for case let url as URL in enumerator where url.pathExtension.lowercased() == "parquet" {
+                files.append(url)
+                if files.count >= max(1, maxFiles) { break }
+            }
+        }
+        files.sort { $0.path < $1.path }
+
+        let wanted = max(0, min(maxRows, ParquetParserBounds.maxPreviewRows))
+        var table = Table()
+        var notes: [String] = []
+        for file in files where table.rows.count < wanted {
+            let part = read(at: file, maxRows: wanted - table.rows.count, maxColumns: maxColumns)
+            guard !part.columns.isEmpty else { continue }
+            let partitions = ParquetDataset.partitions(of: file, under: folder).filter { !part.columns.contains($0.key) }
+            let names = part.columns + partitions.map(\.key)
+            for name in names where !table.columns.contains(name) && table.columns.count < ParquetParserBounds.maxPreviewColumns {
+                table.columns.append(name)
+                for r in table.rows.indices { table.rows[r].append(nil) }
+            }
+            let slots = names.map { table.columns.firstIndex(of: $0) }
+            for row in part.rows {
+                var merged = [String?](repeating: nil, count: table.columns.count)
+                for (value, slot) in zip(row + partitions.map { Optional($0.value) }, slots) {
+                    if let slot { merged[slot] = value }
+                }
+                table.rows.append(merged)
+            }
+            table.totalRows = ParquetParserBounds.saturatingAdd(table.totalRows, part.totalRows)
+            table.hiddenColumns = max(table.hiddenColumns, part.hiddenColumns)
+            table.sourceFiles += 1
+            notes += part.notes.filter { !notes.contains($0) }
+        }
+        // Rows from later files may have added columns: keep within the cell budget.
+        let budget = ParquetParserBounds.maxPreviewCells / max(1, table.columns.count)
+        if table.rows.count > budget { table.rows.removeLast(table.rows.count - budget) }
+        table.notes = notes
         return table
     }
 
