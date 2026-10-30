@@ -21,12 +21,24 @@ public enum ParquetFooter {
         public var maxDefinitionLevel = 0
         public var maxRepetitionLevel = 0
         public var typeLength = 0
+        // One per schema node from the top-level field down to this leaf (unnamed nodes
+        // included), for assembling nested values.
+        public var pathNodes: [PathNode] = []
 
         public init(name: String, logicalType: String, physicalType: String) {
             self.name = name
             self.logicalType = logicalType
             self.physicalType = physicalType
         }
+    }
+
+    public struct PathNode: Equatable {
+        public let name: String
+        // 0 REQUIRED, 1 OPTIONAL, 2 REPEATED
+        public let repetition: Int64
+        // "LIST", "MAP" or "MAP_KEY_VALUE" for annotated groups, else nil.
+        public let annotation: String?
+        public let isLeaf: Bool
     }
 
     public struct RowGroup: Equatable {
@@ -903,7 +915,7 @@ public enum ParquetFooter {
 
         // Definition levels count OPTIONAL and REPEATED ancestors (incl. the leaf), repetition
         // levels the REPEATED ones (Dremel encoding).
-        func walk(path: [String], depth: Int, def: Int, rep: Int) {
+        func walk(path: [String], nodes: [PathNode], depth: Int, def: Int, rep: Int) {
             guard index < schema.count, depth < CompactParser.maxDepth else { return }
             let node = schema[index]
             index += 1
@@ -912,12 +924,21 @@ public enum ParquetFooter {
             let nextPath = hasName ? (path + [node.name]) : path
             let nextDef = def + (node.repetition == 1 || node.repetition == 2 ? 1 : 0)
             let nextRep = rep + (node.repetition == 2 ? 1 : 0)
+            var annotation: String?
+            if node.logicalType == "LIST" || node.convertedType == 3 {
+                annotation = "LIST"
+            } else if node.logicalType == "MAP" || node.convertedType == 1 {
+                annotation = "MAP"
+            } else if node.convertedType == 2 {
+                annotation = "MAP_KEY_VALUE"
+            }
+            let nextNodes = nodes + [PathNode(name: node.name, repetition: node.repetition, annotation: annotation, isLeaf: node.numChildren == 0)]
 
             if node.numChildren > 0 {
                 // A node cannot have more children than there are elements left to consume.
                 let children = min(node.numChildren, schema.count - index)
                 for _ in 0..<children {
-                    walk(path: nextPath, depth: depth + 1, def: nextDef, rep: nextRep)
+                    walk(path: nextPath, nodes: nextNodes, depth: depth + 1, def: nextDef, rep: nextRep)
                 }
             } else if hasName {
                 var column = Column(
@@ -933,6 +954,7 @@ public enum ParquetFooter {
                 column.maxDefinitionLevel = nextDef
                 column.maxRepetitionLevel = nextRep
                 column.typeLength = node.typeLength
+                column.pathNodes = nextNodes
                 result.append(column)
             }
         }
@@ -942,11 +964,11 @@ public enum ParquetFooter {
         index = 1
         if root.numChildren > 0 {
             for _ in 0..<min(root.numChildren, schema.count - index) {
-                walk(path: [], depth: 0, def: 0, rep: 0)
+                walk(path: [], nodes: [], depth: 0, def: 0, rep: 0)
             }
         } else {
             while index < schema.count {
-                walk(path: [], depth: 0, def: 0, rep: 0)
+                walk(path: [], nodes: [], depth: 0, def: 0, rep: 0)
             }
         }
 

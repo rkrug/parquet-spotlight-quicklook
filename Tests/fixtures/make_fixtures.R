@@ -101,6 +101,33 @@ rows_int96 <- arrow_table(ts = Array$create(1577836800000000 + i * 1000001, int6
 write_parquet(rows_int96, file.path(dir, "rows_int96.parquet"), chunk_size = 100,
               use_deprecated_int96_timestamps = TRUE)
 
+# Nested values (checked in core_tests.swift as JSON): 7 rows in row groups of 3, 3, 1 with
+# empty and null lists, nulls inside lists, lists of structs, maps, a nested struct and
+# lists of lists.
+nested_rows <- arrow_table(
+  id = Array$create(1:7, int32()),
+  l_str = Array$create(list(c("a", "b"), character(0), NULL, c("c", NA), "d", NULL, c("e", "f", "g")),
+                       type = list_of(utf8())),
+  l_struct = Array$create(list(
+    data.frame(a = 1L, b = "x"), data.frame(a = integer(0), b = character(0)), NULL,
+    data.frame(a = c(2L, NA), b = c("y", "z")), data.frame(a = 3L, b = NA_character_), NULL,
+    data.frame(a = 4L, b = "w")
+  ), type = list_of(struct(a = int32(), b = utf8()))),
+  m = Array$create(list(
+    data.frame(key = c("a", "b"), value = c(1L, 2L)), data.frame(key = character(0), value = integer(0)), NULL,
+    data.frame(key = "c", value = NA_integer_), data.frame(key = "d", value = 4L), NULL,
+    data.frame(key = c("e", "f"), value = c(5L, 6L))
+  ), type = map_of(utf8(), int32())),
+  s = StructArray$create(data.frame(x = c(1L, 2L, NA, 4L, 5L, 6L, 7L),
+                                    inner = I(data.frame(y = c("p", NA, "q", "r", "s", "t", "u"))))),
+  ll = Array$create(list(list(c(1L, 2L), 3L), list(), NULL, list(integer(0)), list(4L, NULL), NULL, list(5:6)),
+                    type = list_of(list_of(int32())))
+)
+write_parquet(nested_rows, file.path(dir, "nested_rows.parquet"), chunk_size = 3)
+record("nested_rows.parquet", c("id", "l_str.list.element", "l_struct.list.element.a", "l_struct.list.element.b",
+                                "m.key_value.key", "m.key_value.value", "s.x", "s.inner.y",
+                                "ll.list.element.list.element"))
+
 # Not a Parquet file: the trailer of a cut-off file is missing.
 bytes <- readBin(file.path(dir, "flat.parquet"), "raw", n = 64)
 writeBin(bytes, file.path(dir, "truncated.parquet"))

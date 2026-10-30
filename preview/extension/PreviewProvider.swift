@@ -713,14 +713,20 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
             .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
             .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
-            .data-scroll{height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+            .data-scroll{max-height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
             table.data{width:auto;min-width:100%}
             table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
             table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
             table.data td.rn{color:#9ca3af;text-align:right}
             table.data td.null{color:#9ca3af;font-style:italic}
             table.data td.sel{background:#e0ecff}
-            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
+            table.data td.nested{color:#1d4ed8;cursor:pointer}
+            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:320px;overflow:auto}
+            .cell-detail details{margin:0}
+            .cell-detail summary{cursor:pointer}
+            .cell-detail .tree{margin-left:18px}
+            .cell-detail .key{color:#6b7280}
+            .cell-detail .nul{color:#9ca3af;font-style:italic}
             .notes{color:#92400e;margin:4px 0}
           </style>
           <div class=\"tabs\">
@@ -738,6 +744,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let payload: [String: Any] = [
             "columns": table.columns,
             "rows": table.rows.map { row in row.map { cell -> Any in cell ?? NSNull() } },
+            "nested": table.nestedColumns,
         ]
         let json = (try? JSONSerialization.data(withJSONObject: payload))
             .map { String(decoding: $0, as: UTF8.self) }?
@@ -773,8 +780,35 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
               const box = document.getElementById('data-scroll');
               const body = document.getElementById('data-body');
               const n = D.columns.length;
+              const nested = D.nested || [];
+              const parsed = new Map();
               let selected = null;
               function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+              // Nested cells hold JSON (lists, structs, maps; leaf values as strings).
+              function value(r, c){
+                const v = D.rows[r][c];
+                if (!nested[c] || v === null) { return v; }
+                const key = r * n + c;
+                if (!parsed.has(key)) { try { parsed.set(key, JSON.parse(v)); } catch (e) { parsed.set(key, v); } }
+                return parsed.get(key);
+              }
+              function brief(v){
+                if (v === null) { return 'null'; }
+                if (Array.isArray(v)) { return '[' + v.map(brief).join(', ') + ']'; }
+                if (typeof v === 'object') { return '{' + Object.keys(v).map(function(k){ return k + ': ' + brief(v[k]); }).join(', ') + '}'; }
+                return String(v);
+              }
+              function tree(v, key, depth){
+                const label = key === null ? '' : '<span class="key">' + esc(key) + ':</span> ';
+                if (v === null) { return '<div>' + label + '<span class="nul">null</span></div>'; }
+                if (typeof v !== 'object') { return '<div>' + label + esc(v) + '</div>'; }
+                const isList = Array.isArray(v);
+                const keys = isList ? v.map(function(_, i){ return String(i); }) : Object.keys(v);
+                const count = isList ? keys.length + ' items' : keys.length + ' fields';
+                if (keys.length === 0) { return '<div>' + label + (isList ? '[]' : '{}') + '</div>'; }
+                return '<details' + (depth < 1 ? ' open' : '') + '><summary>' + label + '<span class="key">' + (isList ? '[' : '{') + count + (isList ? ']' : '}') + '</span></summary><div class="tree">'
+                  + keys.map(function(k){ return tree(v[k], k, depth + 1); }).join('') + '</div></details>';
+              }
               function render(){
                 const first = Math.max(0, Math.floor(box.scrollTop / H) - 10);
                 const last = Math.min(D.rows.length, first + Math.ceil(box.clientHeight / H) + 30);
@@ -785,9 +819,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                   for (let c = 0; c < n; c++) {
                     const v = row[c];
                     const sel = selected && selected[0] === r && selected[1] === c ? ' sel' : '';
+                    const shown = nested[c] && v !== null ? brief(value(r, c)) : v;
                     html += v === null
                       ? '<td class="null' + sel + '" data-r="' + r + '" data-c="' + c + '">null</td>'
-                      : '<td class="' + sel + '" data-r="' + r + '" data-c="' + c + '">' + esc(v) + '</td>';
+                      : '<td class="' + (nested[c] ? 'nested' : '') + sel + '" data-r="' + r + '" data-c="' + c + '">' + esc(shown.length > 300 ? shown.slice(0, 300) + '…' : shown) + '</td>';
                   }
                   html += '</tr>';
                 }
@@ -798,11 +833,15 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
               body.addEventListener('click', function(e){
                 const td = e.target.closest('td[data-r]');
                 if (!td) { return; }
-                const r = +td.dataset.r, c = +td.dataset.c, v = D.rows[r][c];
+                const r = +td.dataset.r, c = +td.dataset.c, v = value(r, c);
                 selected = [r, c];
                 const detail = document.getElementById('cell-detail');
                 detail.classList.remove('muted');
-                detail.textContent = D.columns[c] + ' · row ' + (r + 1) + ': ' + (v === null ? 'null' : v);
+                if (nested[c] && v !== null && typeof v === 'object') {
+                  detail.innerHTML = '<div class="key">' + esc(D.columns[c]) + ' · row ' + (r + 1) + '</div>' + tree(v, null, 0);
+                } else {
+                  detail.textContent = D.columns[c] + ' · row ' + (r + 1) + ': ' + (v === null ? 'null' : v);
+                }
                 render();
               });
               window.showTab = function(name){

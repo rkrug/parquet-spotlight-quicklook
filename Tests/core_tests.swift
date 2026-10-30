@@ -319,8 +319,8 @@ private func expectedRow(_ i: Int) -> [String?] {
         String(format: "%.2f", Double(i) * 1.25),
         String(format: "%.4f", -Double(i) * 1.5),
         String(format: "0x%02xab", i % 256),
-        ParquetRowReader.nestedPlaceholder,
-        ParquetRowReader.nestedPlaceholder,
+        "[\"\(i)\",\"\(i + 1)\"]",
+        "{\"x\":\"\(i)\"}",
     ]
 }
 
@@ -348,7 +348,7 @@ private func runRowReaderTests(fixturesDir: String) {
     let zstd = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_zstd.parquet"), maxRows: 10, maxColumns: 100)
     assertEqual(zstd.notes.count, 1, "unsupported codec: one grouped note")
     assertTrue(zstd.notes.first?.hasPrefix("codec ZSTD not supported yet: i32, i64") ?? false, "unsupported codec: note names the columns")
-    assertTrue(zstd.rows.allSatisfy { $0[0] == ParquetRowReader.unreadablePlaceholder && $0[13] == ParquetRowReader.nestedPlaceholder }, "unsupported codec: placeholders, not nulls")
+    assertTrue(zstd.rows.allSatisfy { $0[0] == ParquetRowReader.unreadablePlaceholder && $0[13] == ParquetRowReader.unreadablePlaceholder }, "unsupported codec: placeholders, not nulls")
 
     let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
     assertEqual(int96.rows.map { $0[0] }, (1...250).map { expectedRow($0)[8].map { $0 + "000" } }, "INT96 timestamps (ns digits)")
@@ -358,6 +358,28 @@ private func runRowReaderTests(fixturesDir: String) {
     assertEqual(flat.rows[2], ["3", nil, nil, nil, nil, nil, nil], "flat.parquet: nulls in the third row")
     assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/empty.parquet"), maxRows: 10, maxColumns: 10).rows.isEmpty, "empty.parquet: no rows")
     assertTrue(ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/truncated.parquet"), maxRows: 10, maxColumns: 10).columns.isEmpty, "truncated.parquet: nothing")
+
+    // Nested values as JSON (leaf values as strings), across three row groups: empty and null
+    // lists, nulls inside lists, lists of structs, maps, nested structs, lists of lists.
+    let nestedRows = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/nested_rows.parquet"), maxRows: 100, maxColumns: 100)
+    assertEqual(nestedRows.columns, ["id", "l_str", "l_struct", "m", "s", "ll"], "nested: columns")
+    assertEqual(nestedRows.nestedColumns, [false, true, true, true, true, true], "nested: flags")
+    assertTrue(nestedRows.notes.isEmpty, "nested: no notes, got \(nestedRows.notes)")
+    let nestedExpected: [[String?]] = [
+        ["1", #"["a","b"]"#, #"[{"a":"1","b":"x"}]"#, #"{"a":"1","b":"2"}"#, #"{"x":"1","inner":{"y":"p"}}"#, #"[["1","2"],["3"]]"#],
+        ["2", "[]", "[]", "{}", #"{"x":"2","inner":{"y":null}}"#, "[]"],
+        ["3", nil, nil, nil, #"{"x":null,"inner":{"y":"q"}}"#, nil],
+        ["4", #"["c",null]"#, #"[{"a":"2","b":"y"},{"a":null,"b":"z"}]"#, #"{"c":null}"#, #"{"x":"4","inner":{"y":"r"}}"#, "[[]]"],
+        ["5", #"["d"]"#, #"[{"a":"3","b":null}]"#, #"{"d":"4"}"#, #"{"x":"5","inner":{"y":"s"}}"#, #"[["4"],null]"#],
+        ["6", nil, nil, nil, #"{"x":"6","inner":{"y":"t"}}"#, nil],
+        ["7", #"["e","f","g"]"#, #"[{"a":"4","b":"w"}]"#, #"{"e":"5","f":"6"}"#, #"{"x":"7","inner":{"y":"u"}}"#, #"[["5","6"]]"#],
+    ]
+    assertEqual(nestedRows.rows.count, 7, "nested: rows")
+    for (r, row) in nestedRows.rows.enumerated() where r < nestedExpected.count && row != nestedExpected[r] {
+        assertTrue(false, "nested: row \(r + 1) is \(row), expected \(nestedExpected[r])")
+    }
+    let nestedFirst = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/nested_rows.parquet"), maxRows: 4, maxColumns: 100)
+    assertEqual(nestedFirst.rows, Array(nestedExpected.prefix(4)), "nested: rows cut inside the second row group")
 
     // Dataset folders: files in path order, partition keys as columns, rows across files.
     let fm = FileManager.default
@@ -469,14 +491,14 @@ private func runCorruptedPageTests(fixturesDir: String) {
     let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-page-fuzz-\(getpid()).parquet")
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_plain", "rows_uncompressed", "rows_int96"].compactMap { name in
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_plain", "rows_uncompressed", "rows_int96", "nested_rows"].compactMap { name in
         guard let data = FileManager.default.contents(atPath: "\(fixturesDir)/\(name).parquet") else { return nil }
         let b = [UInt8](data)
         let n = b.count
         let len = Int(b[n - 8]) | Int(b[n - 7]) << 8 | Int(b[n - 6]) << 16 | Int(b[n - 5]) << 24
         return (name, b, n - 8 - len)
     }
-    assertEqual(originals.count, 6, "page fuzz: fixtures readable")
+    assertEqual(originals.count, 7, "page fuzz: fixtures readable")
 
     var slowest = 0.0
     for i in 0..<cases {

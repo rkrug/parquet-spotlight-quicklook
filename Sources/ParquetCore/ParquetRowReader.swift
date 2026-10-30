@@ -20,6 +20,8 @@ public enum ParquetRowReader {
         public var hiddenColumns = 0
         // Files the rows come from (datasets; 1 for a single file).
         public var sourceFiles = 0
+        // Per column: cells hold the value as JSON (lists, structs, maps) instead of text.
+        public var nestedColumns: [Bool] = []
     }
 
     public static let nestedPlaceholder = "‹nested›"
@@ -46,6 +48,10 @@ public enum ParquetRowReader {
         let shown = Array(fields.prefix(max(1, min(maxColumns, ParquetParserBounds.maxPreviewColumns))))
         table.hiddenColumns = fields.count - shown.count
         table.columns = shown.map(\.name)
+        table.nestedColumns = shown.map { field in
+            let leaf = summary.columns[field.leaves[0]]
+            return field.leaves.count > 1 || leaf.path.count > 1 || leaf.maxRepetitionLevel > 0
+        }
         guard !shown.isEmpty else { return table }
 
         let budget = ParquetParserBounds.maxPreviewCells / shown.count
@@ -65,10 +71,26 @@ public enum ParquetRowReader {
                 problems.append((message, [column]))
             }
         }
-        for field in shown {
+        for (position, field) in shown.enumerated() {
             let leaf = summary.columns[field.leaves[0]]
-            guard field.leaves.count == 1, leaf.path.count == 1, leaf.maxRepetitionLevel == 0 else {
-                cells.append(Array(repeating: nestedPlaceholder, count: rowCount))
+            if table.nestedColumns[position] {
+                let leaves = field.leaves.map { summary.columns[$0] }
+                guard leaves.count <= ParquetParserBounds.maxPreviewColumns, leaves.allSatisfy({ !$0.pathNodes.isEmpty }) else {
+                    cells.append(Array(repeating: nestedPlaceholder, count: rowCount))
+                    continue
+                }
+                do {
+                    cells.append(try readNestedField(
+                        leaves: leaves, indices: field.leaves, groups: summary.previewRowGroups,
+                        rows: rowCount, file: file, fileSize: fileSize
+                    ))
+                } catch let error as ReadError {
+                    note(error.message, field.name)
+                    cells.append(Array(repeating: unreadablePlaceholder, count: rowCount))
+                } catch {
+                    note("could not be read", field.name)
+                    cells.append(Array(repeating: unreadablePlaceholder, count: rowCount))
+                }
                 continue
             }
             var values: [String?] = []
@@ -124,8 +146,9 @@ public enum ParquetRowReader {
             guard !part.columns.isEmpty else { continue }
             let partitions = ParquetDataset.partitions(of: file, under: folder).filter { !part.columns.contains($0.key) }
             let names = part.columns + partitions.map(\.key)
-            for name in names where !table.columns.contains(name) && table.columns.count < ParquetParserBounds.maxPreviewColumns {
+            for (k, name) in names.enumerated() where !table.columns.contains(name) && table.columns.count < ParquetParserBounds.maxPreviewColumns {
                 table.columns.append(name)
+                table.nestedColumns.append(k < part.nestedColumns.count && part.nestedColumns[k])
                 for r in table.rows.indices { table.rows[r].append(nil) }
             }
             let slots = names.map { table.columns.firstIndex(of: $0) }
@@ -164,10 +187,12 @@ public enum ParquetRowReader {
         case bytes([UInt8])
     }
 
-    private static func readChunk(
-        _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, rows: Int,
-        file: FileHandle, fileSize: UInt64
-    ) throws -> [String?] {
+    // Calls `onDataPage` for each data page of the chunk, with the dictionary read so far, until
+    // it returns false.
+    private static func scanChunk(
+        _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, file: FileHandle, fileSize: UInt64,
+        onDataPage: (PageHeader, ArraySlice<UInt8>, [Raw]) throws -> Bool
+    ) throws {
         var start = chunk.dataPageOffset
         if let dict = chunk.dictionaryPageOffset, dict > 0, dict < start {
             start = dict
@@ -180,10 +205,9 @@ public enum ParquetRowReader {
         try file.seek(toOffset: UInt64(start))
         let bytes = [UInt8](try file.read(upToCount: length) ?? Data())
 
-        var out: [String?] = []
         var dictionary: [Raw] = []
         var cursor = 0
-        while out.count < rows, cursor < bytes.count {
+        while cursor < bytes.count {
             let header = try parsePageHeader(bytes, at: cursor)
             let bodyStart = cursor + header.headerLength
             guard header.compressedSize >= 0, bodyStart + header.compressedSize <= bytes.count else {
@@ -201,22 +225,79 @@ public enum ParquetRowReader {
                 let count = min(header.numValues, ParquetParserBounds.maxPreviewDictionaryValues)
                 dictionary = try decodePlain(page[...], count: count, column: column)
             case 0, 3: // DATA_PAGE, DATA_PAGE_V2
-                let need = min(rows - out.count, header.numValues)
-                let (levels, values, encoding) = try dataPageParts(body, header: header, codec: chunk.codec, column: column, need: need)
-                let present = levels.map { $0.filter { $0 == column.maxDefinitionLevel }.count } ?? need
-                let decoded = try decodeValues(values, encoding: encoding, count: present, column: column, dictionary: dictionary)
-                guard decoded.count == present else { throw ReadError(message: "page has fewer values than expected") }
-                var next = decoded.makeIterator()
-                for i in 0..<need {
-                    if let levels, levels[i] != column.maxDefinitionLevel {
-                        out.append(nil)
-                    } else if let value = next.next() {
-                        out.append(format(value, column: column))
-                    }
-                }
+                if try !onDataPage(header, body, dictionary) { return }
             default: // INDEX_PAGE and unknown page types carry no values
                 continue
             }
+        }
+    }
+
+    // Flat column: the first `rows` values, formatted (nil for nulls).
+    private static func readChunk(
+        _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, rows: Int,
+        file: FileHandle, fileSize: UInt64
+    ) throws -> [String?] {
+        var out: [String?] = []
+        guard rows > 0 else { return out }
+        try scanChunk(chunk, column: column, file: file, fileSize: fileSize) { header, body, dictionary in
+            let need = min(rows - out.count, header.numValues)
+            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: need)
+            let present = page.definitions.map { $0.filter { $0 == column.maxDefinitionLevel }.count } ?? need
+            let decoded = try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            guard decoded.count == present else { throw ReadError(message: "page has fewer values than expected") }
+            var next = decoded.makeIterator()
+            for i in 0..<need {
+                if let levels = page.definitions, levels[i] != column.maxDefinitionLevel {
+                    out.append(nil)
+                } else if let value = next.next() {
+                    out.append(format(value, column: column))
+                }
+            }
+            return out.count < rows
+        }
+        return out
+    }
+
+    private struct Triple {
+        let rep: Int
+        let def: Int
+        let value: Raw?
+    }
+
+    // Leaf of a nested field: its (repetition, definition, value) triples for the first `rows`
+    // rows, one array per row (a row starts at repetition level 0).
+    private static func readRows(
+        _ chunk: ParquetFooter.ChunkLocation, column: ParquetFooter.Column, rows: Int,
+        file: FileHandle, fileSize: UInt64
+    ) throws -> [[Triple]] {
+        var out: [[Triple]] = []
+        guard rows > 0 else { return out }
+        try scanChunk(chunk, column: column, file: file, fileSize: fileSize) { header, body, dictionary in
+            guard header.numValues <= ParquetParserBounds.maxPreviewPageValues else {
+                throw ReadError(message: "page with more than \(ParquetParserBounds.maxPreviewPageValues) values")
+            }
+            let count = header.numValues
+            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: count)
+            let definitions = page.definitions ?? Array(repeating: column.maxDefinitionLevel, count: count)
+            let repetitions = page.repetitions ?? Array(repeating: 0, count: count)
+            let present = definitions.filter { $0 == column.maxDefinitionLevel }.count
+            let decoded = try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
+            guard decoded.count == present else { throw ReadError(message: "page has fewer values than expected") }
+            var next = decoded.makeIterator()
+            for i in 0..<count {
+                let value = definitions[i] == column.maxDefinitionLevel ? next.next() : nil
+                if repetitions[i] == 0 {
+                    if out.count == rows { return false }
+                    out.append([])
+                } else if out.isEmpty {
+                    throw ReadError(message: "column chunk starts inside a row")
+                }
+                // ponytail: values past the per-row cap are dropped, so a very long list ends early.
+                if out[out.count - 1].count < ParquetParserBounds.maxPreviewNestedValues {
+                    out[out.count - 1].append(Triple(rep: repetitions[i], def: definitions[i], value: value))
+                }
+            }
+            return true
         }
         return out
     }
@@ -290,41 +371,275 @@ public enum ParquetRowReader {
         }
     }
 
-    // Definition levels for the first `need` values (nil for REQUIRED columns), the value bytes,
-    // and their encoding.
+    private struct PageParts {
+        // Levels of the first `count` values; nil when the column has none of that kind.
+        let repetitions: [Int]?
+        let definitions: [Int]?
+        let values: ArraySlice<UInt8>
+        let encoding: Int64
+    }
+
+    // Splits a data page into repetition levels, definition levels and value bytes. Levels are
+    // decoded for the first `count` values only.
     private static func dataPageParts(
-        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, need: Int
-    ) throws -> ([Int]?, ArraySlice<UInt8>, Int64) {
-        let width = bitWidth(column.maxDefinitionLevel)
+        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, count: Int
+    ) throws -> PageParts {
+        let repWidth = bitWidth(column.maxRepetitionLevel)
+        let defWidth = bitWidth(column.maxDefinitionLevel)
         if header.type == 3 {
             let levelBytes = header.repetitionLevelsLength + header.definitionLevelsLength
             guard levelBytes <= body.count else { throw ReadError(message: "invalid level lengths") }
-            let defStart = body.startIndex + header.repetitionLevelsLength
-            let levels = column.maxDefinitionLevel > 0
-                ? try hybrid(body[defStart..<(defStart + header.definitionLevelsLength)], bitWidth: width, count: need)
+            let repStart = body.startIndex
+            let defStart = repStart + header.repetitionLevelsLength
+            let repetitions = column.maxRepetitionLevel > 0
+                ? try hybrid(body[repStart..<defStart], bitWidth: repWidth, count: count)
+                : nil
+            let definitions = column.maxDefinitionLevel > 0
+                ? try hybrid(body[defStart..<(defStart + header.definitionLevelsLength)], bitWidth: defWidth, count: count)
                 : nil
             let rest = body[(body.startIndex + levelBytes)...]
             let values = header.valuesCompressed
                 ? try decompress(rest, codec: codec, size: header.uncompressedSize - levelBytes)[...]
                 : rest
-            return (levels, values, header.encoding)
+            return PageParts(repetitions: repetitions, definitions: definitions, values: values, encoding: header.encoding)
         }
 
+        // DATA_PAGE (v1): everything compressed; each level section has a 4-byte length prefix.
         let page = try decompress(body, codec: codec, size: header.uncompressedSize)
         var position = 0
-        var levels: [Int]?
+        func levels(width: Int) throws -> [Int] {
+            let length = try littleEndian32(page[...], at: position)
+            guard length >= 0, position + 4 + length <= page.count else { throw ReadError(message: "invalid level data") }
+            defer { position += 4 + length }
+            return try hybrid(page[(position + 4)..<(position + 4 + length)], bitWidth: width, count: count)
+        }
+        let repetitions = column.maxRepetitionLevel > 0 ? try levels(width: repWidth) : nil
+        var definitions: [Int]?
         if column.maxDefinitionLevel > 0 {
             guard header.definitionEncoding == 3 else { throw ReadError(message: "unsupported definition level encoding") }
-            let length = try littleEndian32(page[...], at: position)
-            guard length >= 0, position + 4 + length <= page.count else { throw ReadError(message: "invalid definition levels") }
-            levels = try hybrid(page[(position + 4)..<(position + 4 + length)], bitWidth: width, count: need)
-            position += 4 + length
+            definitions = try levels(width: defWidth)
         }
-        return (levels, page[position...], header.encoding)
+        return PageParts(repetitions: repetitions, definitions: definitions, values: page[position...], encoding: header.encoding)
     }
 
     private static func bitWidth(_ maxLevel: Int) -> Int {
         maxLevel <= 0 ? 0 : Int.bitWidth - maxLevel.leadingZeroBitCount
+    }
+
+    // MARK: - Nested values
+
+    private indirect enum Nested {
+        case null
+        case value(String)
+        // `more`: items left out after maxPreviewNestedItems.
+        case list([Nested], more: Int)
+        case object([(String, Nested)])
+    }
+
+    // One nested top-level field: each row's value as compact JSON with fields in schema order
+    // and leaf values as strings; nil when the field is null in that row.
+    private static func readNestedField(
+        leaves: [ParquetFooter.Column], indices: [Int], groups: [ParquetFooter.PreviewRowGroup],
+        rows: Int, file: FileHandle, fileSize: UInt64
+    ) throws -> [String?] {
+        var perLeaf: [[[Triple]]] = []
+        for (leaf, index) in zip(leaves, indices) {
+            var leafRows: [[Triple]] = []
+            for group in groups where leafRows.count < rows {
+                guard index < group.chunks.count else { break }
+                let need = min(rows - leafRows.count, Int(clamping: group.rows))
+                leafRows += try readRows(group.chunks[index], column: leaf, rows: need, file: file, fileSize: fileSize)
+            }
+            perLeaf.append(leafRows)
+        }
+
+        let tree = TreeNode(leaves[0].pathNodes[0])
+        for leaf in leaves { tree.insert(leaf.pathNodes.dropFirst()) }
+        let levels = leaves.map(cumulativeLevels)
+
+        return (0..<rows).map { r in
+            var merged: Nested?
+            for (l, leaf) in leaves.enumerated() where r < perLeaf[l].count && !perLeaf[l][r].isEmpty {
+                let value = assemble(perLeaf[l][r][...], column: leaf, at: 0, levels: levels[l])
+                merged = merged.map { merge($0, value) } ?? value
+            }
+            let shaped = shape(merged ?? .null, tree)
+            if case .null = shaped { return nil }
+            return json(shaped)
+        }
+    }
+
+    // Definition and repetition level reached at each path node (Dremel).
+    private static func cumulativeLevels(_ column: ParquetFooter.Column) -> (def: [Int], rep: [Int]) {
+        var def = 0, rep = 0
+        var defs: [Int] = [], reps: [Int] = []
+        for node in column.pathNodes {
+            if node.repetition == 1 || node.repetition == 2 { def += 1 }
+            if node.repetition == 2 { rep += 1 }
+            defs.append(def)
+            reps.append(rep)
+        }
+        return (defs, reps)
+    }
+
+    // One leaf's triples of one row, assembled from path node `i` down: repeated nodes become
+    // lists (split where the repetition level returns to theirs), groups become one-field
+    // objects (merged across leaves later), and a definition level below a node's makes it
+    // null (or an empty list for a repeated node).
+    private static func assemble(_ s: ArraySlice<Triple>, column: ParquetFooter.Column, at i: Int, levels: (def: [Int], rep: [Int])) -> Nested {
+        let node = column.pathNodes[i]
+        guard let first = s.first else { return .null }
+        func instance(_ part: ArraySlice<Triple>) -> Nested {
+            if node.isLeaf {
+                return part.first?.value.map { .value(format($0, column: column)) } ?? .null
+            }
+            guard i + 1 < column.pathNodes.count else { return .null }
+            return .object([(column.pathNodes[i + 1].name, assemble(part, column: column, at: i + 1, levels: levels))])
+        }
+        guard node.repetition == 2 else {
+            return first.def < levels.def[i] ? .null : instance(s)
+        }
+        if first.def < levels.def[i] { return .list([], more: 0) }
+        var items: [Nested] = []
+        var more = 0
+        var start = s.startIndex
+        func flush(_ end: Int) {
+            if items.count < ParquetParserBounds.maxPreviewNestedItems {
+                items.append(instance(s[start..<end]))
+            } else {
+                more += 1
+            }
+        }
+        for j in s.indices.dropFirst() where s[j].rep <= levels.rep[i] {
+            flush(j)
+            start = j
+        }
+        flush(s.endIndex)
+        return .list(items, more: more)
+    }
+
+    // Leaves of one field share their ancestors: objects merge by field name, lists item by item.
+    private static func merge(_ a: Nested, _ b: Nested) -> Nested {
+        switch (a, b) {
+        case (.object(var x), .object(let y)):
+            for (key, value) in y {
+                if let i = x.firstIndex(where: { $0.0 == key }) {
+                    x[i].1 = merge(x[i].1, value)
+                } else {
+                    x.append((key, value))
+                }
+            }
+            return .object(x)
+        case let (.list(x, mx), .list(y, my)):
+            let items = (0..<max(x.count, y.count)).map { i -> Nested in
+                if i < x.count && i < y.count { return merge(x[i], y[i]) }
+                return i < x.count ? x[i] : y[i]
+            }
+            return .list(items, more: max(mx, my))
+        case (.null, _):
+            return b
+        default:
+            return a
+        }
+    }
+
+    // The field's schema as a tree, for shaping assembled values.
+    private final class TreeNode {
+        let node: ParquetFooter.PathNode
+        var children: [TreeNode] = []
+
+        init(_ node: ParquetFooter.PathNode) {
+            self.node = node
+        }
+
+        func insert(_ path: ArraySlice<ParquetFooter.PathNode>) {
+            guard let next = path.first else { return }
+            let child = children.first { $0.node.name == next.name } ?? {
+                let created = TreeNode(next)
+                children.append(created)
+                return created
+            }()
+            child.insert(path.dropFirst())
+        }
+
+        func child(named name: String) -> TreeNode? {
+            children.first { $0.node.name == name }
+        }
+    }
+
+    // Applies LIST and MAP annotations: a LIST group becomes the list of its elements, a MAP
+    // group an object of key: value; other groups stay structs.
+    private static func shape(_ value: Nested, _ tree: TreeNode) -> Nested {
+        if tree.node.repetition == 2, case let .list(items, more) = value {
+            return .list(items.map { shapeInstance($0, tree) }, more: more)
+        }
+        return shapeInstance(value, tree)
+    }
+
+    private static func shapeInstance(_ value: Nested, _ tree: TreeNode) -> Nested {
+        guard case let .object(fields) = value else { return value }
+        switch tree.node.annotation {
+        case "LIST":
+            guard let repeated = tree.children.first, let inner = fields.first?.1 else { return value }
+            guard case let .list(items, more) = inner else { return inner }
+            // Three-level lists wrap each element in the repeated group; in legacy two-level
+            // lists the repeated node is the element itself.
+            if !repeated.node.isLeaf, repeated.children.count == 1 {
+                let element = repeated.children[0]
+                return .list(items.map { item in
+                    guard case let .object(wrapped) = item, let inner = wrapped.first?.1 else { return item }
+                    return shape(inner, element)
+                }, more: more)
+            }
+            return .list(items.map { shapeInstance($0, repeated) }, more: more)
+        case "MAP":
+            guard let entries = tree.children.first, entries.children.count == 2,
+                  let inner = fields.first?.1, case let .list(items, more) = inner else { return value }
+            let keyNode = entries.children[0], valueNode = entries.children[1]
+            var pairs: [(String, Nested)] = items.map { item in
+                guard case let .object(entry) = item else { return ("null", .null) }
+                let key = entry.first { $0.0 == keyNode.node.name }?.1
+                let text: String
+                if case let .value(k)? = key { text = k } else { text = "null" }
+                let mapped = entry.first { $0.0 == valueNode.node.name }.map { shape($0.1, valueNode) } ?? .null
+                return (text, mapped)
+            }
+            if more > 0 { pairs.append(("…", .value("\(more) more"))) }
+            return .object(pairs)
+        default:
+            return .object(fields.map { key, child in (key, tree.child(named: key).map { shape(child, $0) } ?? child) })
+        }
+    }
+
+    private static func json(_ value: Nested) -> String {
+        switch value {
+        case .null:
+            return "null"
+        case .value(let text):
+            return quote(text)
+        case let .list(items, more):
+            var parts = items.map(json)
+            if more > 0 { parts.append(quote("… \(more) more")) }
+            return "[" + parts.joined(separator: ",") + "]"
+        case .object(let fields):
+            return "{" + fields.map { quote($0.0) + ":" + json($0.1) }.joined(separator: ",") + "}"
+        }
+    }
+
+    private static func quote(_ text: String) -> String {
+        var out = "\""
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            case _ where scalar.value < 0x20: out += String(format: "\\u%04x", scalar.value)
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out + "\""
     }
 
     // MARK: - Encodings
