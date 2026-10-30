@@ -28,6 +28,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var recursiveScan = true
         var showDataTab = true
         var previewRows = 100
+        var openDataTab = false
     }
 
     private struct PreviewSettingsData: Codable {
@@ -42,6 +43,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         // Optional: missing in settings written by versions before the Data tab.
         let showDataTab: Bool?
         let previewRows: Int?
+        let openDataTab: Bool?
     }
 
     private final class ColumnTreeNode {
@@ -182,7 +184,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 maxScanFiles: max(1, decoded.maxScanFiles),
                 recursiveScan: decoded.recursiveScan,
                 showDataTab: decoded.showDataTab ?? true,
-                previewRows: max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows))
+                previewRows: max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows)),
+                openDataTab: decoded.openDataTab ?? false
             )
         }
 
@@ -208,6 +211,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             }
             let rows = defaults.integer(forKey: "previewRows")
             if rows > 0 { s.previewRows = min(rows, ParquetParserBounds.maxPreviewRows) }
+            s.openDataTab = defaults.bool(forKey: "openDataTab")
         }
         return s
     }
@@ -866,6 +870,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 });
                 if (name === 'data') { render(); }
               };
+              \(settings.openDataTab ? "window.addEventListener('DOMContentLoaded', function(){ window.showTab('data'); });" : "")
             })();
           </script>
         """

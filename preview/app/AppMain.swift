@@ -27,6 +27,7 @@ private enum SettingsKeys {
     static let recursiveScan = "recursiveScan"
     static let showDataTab = "showDataTab"
     static let previewRows = "previewRows"
+    static let openDataTab = "openDataTab"
     static let autoCheckUpdates = "autoCheckUpdates"
     static let updateCheckInterval = "updateCheckInterval"
     static let lastUpdateCheckAt = "lastUpdateCheckAt"
@@ -74,6 +75,7 @@ private struct PreviewSettingsData: Codable {
     // Data tab (#25); optional so settings files from older versions still decode.
     let showDataTab: Bool?
     let previewRows: Int?
+    let openDataTab: Bool?
 }
 
 private struct LiveSystemAccess: ParquetSystemAccess {
@@ -105,6 +107,7 @@ private final class AppModel: ObservableObject {
     @Published var recursiveScan = true
     @Published var showDataTab = true
     @Published var previewRows = 100
+    @Published var openDataTab = false
     @Published var autoCheckUpdates = true
     @Published var updateCheckInterval: UpdateCheckInterval = .daily
     // Saved on change: the update check reads it even if settings are never applied.
@@ -188,6 +191,7 @@ private final class AppModel: ObservableObject {
             recursiveScan = decoded.recursiveScan
             showDataTab = decoded.showDataTab ?? true
             previewRows = max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows))
+            openDataTab = decoded.openDataTab ?? false
             return
         }
 
@@ -225,6 +229,7 @@ private final class AppModel: ObservableObject {
         showDataTab = defaults.object(forKey: SettingsKeys.showDataTab) == nil ? true : defaults.bool(forKey: SettingsKeys.showDataTab)
         let rows = defaults.integer(forKey: SettingsKeys.previewRows)
         previewRows = rows > 0 ? min(rows, ParquetParserBounds.maxPreviewRows) : 100
+        openDataTab = defaults.bool(forKey: SettingsKeys.openDataTab)
         if defaults.object(forKey: SettingsKeys.autoCheckUpdates) == nil {
             autoCheckUpdates = true
         } else {
@@ -256,6 +261,7 @@ private final class AppModel: ObservableObject {
         defaults.set(recursiveScan, forKey: SettingsKeys.recursiveScan)
         defaults.set(showDataTab, forKey: SettingsKeys.showDataTab)
         defaults.set(normalizedPreviewRows, forKey: SettingsKeys.previewRows)
+        defaults.set(openDataTab, forKey: SettingsKeys.openDataTab)
         defaults.set(autoCheckUpdates, forKey: SettingsKeys.autoCheckUpdates)
         defaults.set(updateCheckInterval.rawValue, forKey: SettingsKeys.updateCheckInterval)
 
@@ -269,7 +275,8 @@ private final class AppModel: ObservableObject {
             maxScanFiles: normalizedMaxScanFiles,
             recursiveScan: recursiveScan,
             showDataTab: showDataTab,
-            previewRows: normalizedPreviewRows
+            previewRows: normalizedPreviewRows,
+            openDataTab: openDataTab
         )
         if let data = try? JSONEncoder().encode(payload) {
             let dir = previewContainerSettings.deletingLastPathComponent()
@@ -293,6 +300,7 @@ private final class AppModel: ObservableObject {
         recursiveScan = true
         showDataTab = true
         previewRows = 100
+        openDataTab = false
         autoCheckUpdates = true
         updateCheckInterval = .daily
         saveSettings()
@@ -1310,6 +1318,11 @@ private struct ContentView: View {
                         .monospacedDigit()
                         .frame(width: 60, alignment: .trailing)
                         .foregroundStyle(model.showDataTab ? .primary : .secondary)
+                }
+                .disabled(!model.showDataTab)
+                Picker("Open with", selection: $model.openDataTab) {
+                    Text("Schema tab").tag(false)
+                    Text("Data tab").tag(true)
                 }
                 .disabled(!model.showDataTab)
                 Text("Row data is shown in Quick Look only; Spotlight never indexes it. Rows are cut to fit 200,000 cells.")

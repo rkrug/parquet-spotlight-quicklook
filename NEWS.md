@@ -4,7 +4,7 @@
 
 ### Changes
 
-- Quick Look has a `Data` tab with the first rows of the file (100 by default, up to 10,000, set in the app's Quick Look Settings). For dataset folders it shows the first rows across the files, with partition keys (e.g. `year`) as columns.
+- Quick Look has a `Data` tab with the first rows of the file (100 by default, up to 10,000, set in the app's Quick Look Settings, where you can also choose whether previews open on the Schema or the Data tab). For dataset folders it shows the first rows across the files, with partition keys (e.g. `year`) as columns.
 - Nested values (lists, structs, maps) appear as `[a, b]` or `{x: 1}`; click one to open it as a tree.
 - All common compressions are read (SNAPPY, ZSTD, GZIP, LZ4, BROTLI), and columns with very large pages are read from the start of each page.
 - All Parquet encodings in use are read, including the newer ones from Spark and DuckDB (DELTA, BYTE_STREAM_SPLIT). If a column still cannot be shown, its header has an ⓘ: hover or click it for the reason. Only the preview is affected, not the file.
