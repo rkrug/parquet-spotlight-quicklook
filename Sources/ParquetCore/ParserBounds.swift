@@ -23,9 +23,9 @@ public enum ParquetParserBounds {
     public static let maxPreviewPageHeaderBytes = 1024 * 1024
     public static let maxPreviewDictionaryValues = 1_000_000
     public static let maxPreviewCellCharacters = 500
-    // Nested columns: levels decoded per page, triples kept per row and leaf, and list items
+    // Nested columns: levels decoded per page (only up to the rows shown), triples kept per row and leaf, and list items
     // shown per list (the rest is summarised as "… n more").
-    public static let maxPreviewPageValues = 1_000_000
+    public static let maxPreviewPageValues = 2_000_000
     public static let maxPreviewNestedValues = 10_000
     public static let maxPreviewNestedItems = 100
 

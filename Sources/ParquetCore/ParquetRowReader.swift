@@ -287,23 +287,13 @@ public enum ParquetRowReader {
         var out: [[Triple]] = []
         guard rows > 0 else { return out }
         try scanChunk(chunk, column: column, file: file, fileSize: fileSize) { header, body, dictionary in
-            guard header.numValues <= ParquetParserBounds.maxPreviewPageValues else {
-                throw ReadError(message: "page with more than \(ParquetParserBounds.maxPreviewPageValues) values")
-            }
-            let count = header.numValues
-            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: count, limit: pageLimit)
-            let definitions = page.definitions ?? Array(repeating: column.maxDefinitionLevel, count: count)
-            let repetitions = page.repetitions ?? Array(repeating: 0, count: count)
-            // Only the values of the rows still needed are decoded: up to the start of row rows + 1.
-            var cutoff = count
-            var starts = out.count
-            for i in 0..<count where repetitions[i] == 0 {
-                starts += 1
-                if starts > rows {
-                    cutoff = i
-                    break
-                }
-            }
+            // Levels are decoded only up to the start of the first row not needed (cutoff), so a
+            // page with millions of values costs no more than the rows shown.
+            let page = try dataPageParts(body, header: header, codec: chunk.codec, column: column, count: header.numValues,
+                                         limit: pageLimit, rowsWanted: rows - out.count)
+            let cutoff = page.repetitions?.count ?? min(header.numValues, rows - out.count)
+            let definitions = page.definitions ?? Array(repeating: column.maxDefinitionLevel, count: cutoff)
+            let repetitions = page.repetitions ?? Array(repeating: 0, count: cutoff)
             let present = definitions[..<cutoff].filter { $0 == column.maxDefinitionLevel }.count
             let decoded = try page.decoding {
                 try decodeValues(page.values, encoding: page.encoding, count: present, column: column, dictionary: dictionary)
@@ -322,7 +312,7 @@ public enum ParquetRowReader {
                     out[out.count - 1].append(Triple(rep: repetitions[i], def: definitions[i], value: value))
                 }
             }
-            return cutoff == count
+            return cutoff == header.numValues
         }
         return out
     }
@@ -418,20 +408,38 @@ public enum ParquetRowReader {
     // Splits a data page into repetition levels, definition levels and value bytes. Levels are
     // decoded for the first `count` values only.
     private static func dataPageParts(
-        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, count: Int, limit: Int
+        _ body: ArraySlice<UInt8>, header: PageHeader, codec: Int64, column: ParquetFooter.Column, count: Int, limit: Int,
+        rowsWanted: Int? = nil
     ) throws -> PageParts {
         let repWidth = bitWidth(column.maxRepetitionLevel)
         let defWidth = bitWidth(column.maxDefinitionLevel)
+        // Repetition levels up to the start of row rowsWanted + 1 (all `count` without a limit);
+        // definition levels then only for those values.
+        func repetitionLevels(_ bytes: ArraySlice<UInt8>) throws -> [Int] {
+            guard let wanted = rowsWanted else { return try hybrid(bytes, bitWidth: repWidth, count: count) }
+            var starts = 0
+            var decoded = 0
+            var overflow = false
+            let levels = try hybrid(bytes, bitWidth: repWidth, count: count) { level in
+                decoded += 1
+                if decoded > ParquetParserBounds.maxPreviewPageValues {
+                    overflow = true
+                    return true
+                }
+                if level == 0 { starts += 1 }
+                return starts > wanted
+            }
+            if overflow { throw ReadError(message: tooLargeMessage) }
+            return levels
+        }
         if header.type == 3 {
             let levelBytes = header.repetitionLevelsLength + header.definitionLevelsLength
             guard levelBytes <= body.count else { throw ReadError(message: "invalid level lengths") }
             let repStart = body.startIndex
             let defStart = repStart + header.repetitionLevelsLength
-            let repetitions = column.maxRepetitionLevel > 0
-                ? try hybrid(body[repStart..<defStart], bitWidth: repWidth, count: count)
-                : nil
+            let repetitions = column.maxRepetitionLevel > 0 ? try repetitionLevels(body[repStart..<defStart]) : nil
             let definitions = column.maxDefinitionLevel > 0
-                ? try hybrid(body[defStart..<(defStart + header.definitionLevelsLength)], bitWidth: defWidth, count: count)
+                ? try hybrid(body[defStart..<(defStart + header.definitionLevelsLength)], bitWidth: defWidth, count: repetitions?.count ?? count)
                 : nil
             let rest = body[(body.startIndex + levelBytes)...]
             let valuesSize = header.uncompressedSize - levelBytes
@@ -446,18 +454,21 @@ public enum ParquetRowReader {
         let truncated = header.uncompressedSize > limit
         let page = try decompress(body, codec: codec, size: header.uncompressedSize, limit: limit)
         var position = 0
-        func levels(width: Int) throws -> [Int] {
+        func levels(_ decode: (ArraySlice<UInt8>) throws -> [Int]) throws -> [Int] {
             let length = try littleEndian32(page[...], at: position)
             guard length >= 0, position + 4 + length <= page.count else { throw ReadError(message: "invalid level data") }
             defer { position += 4 + length }
-            return try hybrid(page[(position + 4)..<(position + 4 + length)], bitWidth: width, count: count)
+            return try decode(page[(position + 4)..<(position + 4 + length)])
         }
         guard column.maxDefinitionLevel == 0 || header.definitionEncoding == 3 else {
             throw ReadError(message: "unsupported definition level encoding")
         }
         var parts = PageParts(repetitions: nil, definitions: nil, values: [], encoding: header.encoding, truncated: truncated)
-        let repetitions = column.maxRepetitionLevel > 0 ? try parts.decoding { try levels(width: repWidth) } : nil
-        let definitions = column.maxDefinitionLevel > 0 ? try parts.decoding { try levels(width: defWidth) } : nil
+        let repetitions = column.maxRepetitionLevel > 0 ? try parts.decoding { try levels(repetitionLevels) } : nil
+        let definitionCount = repetitions?.count ?? count
+        let definitions = column.maxDefinitionLevel > 0
+            ? try parts.decoding { try levels { try hybrid($0, bitWidth: defWidth, count: definitionCount) } }
+            : nil
         parts = PageParts(repetitions: repetitions, definitions: definitions, values: page[position...], encoding: header.encoding, truncated: truncated)
         return parts
     }
@@ -766,7 +777,8 @@ public enum ParquetRowReader {
     }
 
     // RLE / bit-packed hybrid (levels, dictionary indices, RLE booleans): the first `count` values.
-    static func hybrid(_ bytes: ArraySlice<UInt8>, bitWidth: Int, count: Int) throws -> [Int] {
+    // `stop` (optional) sees each value before it is added; returning true ends decoding there.
+    static func hybrid(_ bytes: ArraySlice<UInt8>, bitWidth: Int, count: Int, stop: ((Int) -> Bool)? = nil) throws -> [Int] {
         guard bitWidth >= 0, bitWidth <= 32 else { throw ReadError(message: "invalid bit width") }
         var out: [Int] = []
         out.reserveCapacity(min(count, ParquetParserBounds.maxPreviewRows))
@@ -791,8 +803,15 @@ public enum ParquetRowReader {
                 var value = 0
                 for k in 0..<width { value |= Int(bytes[p + k]) << (8 * k) }
                 p += width
-                let run = Int(clamping: header >> 1)
-                out += Array(repeating: value, count: min(run, count - out.count))
+                let run = min(Int(clamping: header >> 1), count - out.count)
+                if let stop {
+                    for _ in 0..<run {
+                        if stop(value) { return out }
+                        out.append(value)
+                    }
+                } else {
+                    out += Array(repeating: value, count: run)
+                }
             } else {
                 // Bit-packed groups of 8 values, least significant bit first.
                 let groups = Int(clamping: header >> 1)
@@ -805,6 +824,7 @@ public enum ParquetRowReader {
                         let bit = i * bitWidth + b
                         if bytes[p + bit / 8] >> (bit % 8) & 1 == 1 { value |= 1 << b }
                     }
+                    if let stop, stop(value) { return out }
                     out.append(value)
                 }
                 p += available * bitWidth
