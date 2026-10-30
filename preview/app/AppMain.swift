@@ -405,10 +405,28 @@ private final class AppModel: ObservableObject {
         ParquetSemVer(looseVersion: currentVersion())?.isPreRelease ?? false
     }
 
-    // From a beta back to the newest stable release, through the same signed install as updates.
-    // Automatic checks never downgrade; this explicit path also switches the channel to Stable.
+    private enum ReleaseInstallKind {
+        case reinstall
+        case downgrade
+    }
+
+    // Updates -> "Reinstall Latest Release…": the newest release of the selected channel (last
+    // beta on Beta, last stable on Stable), installed even when it is not newer than this build,
+    // e.g. to get back to an official build or repair a broken install.
+    func reinstallLatestRelease() {
+        installRelease(.reinstall)
+    }
+
+    // From a beta back to the newest stable release. Automatic checks never downgrade; this
+    // explicit path also switches the channel to Stable.
     func downgradeToStable() {
-        setStatus("Looking for the latest stable release…")
+        installRelease(.downgrade)
+    }
+
+    // Both go through the same signed install as updates, and replace the Spotlight importer.
+    private func installRelease(_ kind: ReleaseInstallKind) {
+        let channel = updateChannel
+        setStatus(kind == .downgrade ? "Looking for the latest stable release…" : "Looking for the latest \(channel.rawValue) release…")
         fetchReleases { [weak self] result in
             guard let self else { return }
             DispatchQueue.main.async {
@@ -421,37 +439,55 @@ private final class AppModel: ObservableObject {
                     releases = list
                 }
                 let current = ParquetSemVer(looseVersion: self.currentVersion()) ?? .zero
+                let candidates = Self.candidates(releases)
+                let pick = kind == .downgrade
+                    ? ParquetReleaseSelector.downgradeTarget(candidates, current: current)
+                    : ParquetReleaseSelector.newest(candidates, channel: channel)
                 guard
-                    let index = ParquetReleaseSelector.downgradeTarget(Self.candidates(releases), current: current),
+                    let index = pick,
                     let target = ParquetSemVer(strictTag: releases[index].tag_name),
                     let releasePage = self.trustedReleasePage(releases[index])
                 else {
-                    self.setStatus("No older stable release to downgrade to.")
-                    self.showUpdateErrorDialog("There is no stable release older than \(self.currentVersion()) to downgrade to. Newer stable releases are offered by Check for Updates.")
+                    if kind == .downgrade {
+                        self.setStatus("No older stable release to downgrade to.")
+                        self.showUpdateErrorDialog("There is no stable release older than \(self.currentVersion()) to downgrade to. Newer stable releases are offered by Check for Updates.")
+                    } else {
+                        self.setStatus("No \(channel.rawValue) release found.")
+                        self.showUpdateErrorDialog("Could not find a \(channel.rawValue) release to reinstall.")
+                    }
                     return
                 }
                 let package = self.updatePackage(for: releases[index], version: target.normalized)
+                let label = "v\(target.normalized)" + (target.isPreRelease ? " (beta)" : "")
 
                 let alert = NSAlert()
                 alert.alertStyle = .warning
                 alert.icon = NSApp.applicationIconImage
-                alert.messageText = "Downgrade to v\(target.normalized)?"
-                alert.informativeText = "\(self.appDisplayName) \(self.currentVersion()) is replaced by the stable release v\(target.normalized), and the release channel is set to Stable. The Spotlight importer is replaced too."
+                switch kind {
+                case .downgrade:
+                    alert.messageText = "Downgrade to \(label)?"
+                    alert.informativeText = "\(self.appDisplayName) \(self.currentVersion()) is replaced by the stable release \(label), and the release channel is set to Stable. The Spotlight importer is replaced too."
+                case .reinstall:
+                    alert.messageText = "Reinstall \(label)?"
+                    alert.informativeText = "\(self.appDisplayName) \(self.currentVersion()) is replaced by \(label), the latest release on the \(channel == .beta ? "Beta" : "Stable") channel. The Spotlight importer is replaced too."
+                }
                 if package != nil {
                     alert.informativeText += " The download's signature is checked before anything is replaced."
-                    alert.addButton(withTitle: "Downgrade")
+                    alert.addButton(withTitle: kind == .downgrade ? "Downgrade" : "Reinstall")
                 } else {
                     alert.informativeText += " This release has no signed download (or the app's folder is not writable), so it has to be installed from the release page."
                     alert.addButton(withTitle: "Open Release Page")
                 }
                 alert.addButton(withTitle: "Cancel")
                 guard alert.runModal() == .alertFirstButtonReturn else {
-                    self.setStatus("Downgrade cancelled.")
+                    self.setStatus(kind == .downgrade ? "Downgrade cancelled." : "Reinstall cancelled.")
                     return
                 }
-                self.updateChannel = .stable
+                if kind == .downgrade {
+                    self.updateChannel = .stable
+                }
                 if let package {
-                    self.installUpdate(package, releasePage: releasePage, downgrade: true)
+                    self.installUpdate(package, releasePage: releasePage, replaceImporter: true)
                 } else {
                     NSWorkspace.shared.open(releasePage)
                 }
@@ -522,12 +558,12 @@ private final class AppModel: ObservableObject {
         }
     }
 
-    private func installUpdate(_ package: UpdatePackage, releasePage: URL, downgrade: Bool = false) {
-        setStatus("Downloading \(downgrade ? "release" : "update") \(package.version)…")
+    private func installUpdate(_ package: UpdatePackage, releasePage: URL, replaceImporter: Bool = false) {
+        setStatus("Downloading \(replaceImporter ? "release" : "update") \(package.version)…")
         Task {
             do {
                 let newApp = try await downloadAndVerifyUpdate(package)
-                await MainActor.run { self.swapInUpdate(newApp, version: package.version, downgrade: downgrade) }
+                await MainActor.run { self.swapInUpdate(newApp, version: package.version, replaceImporter: replaceImporter) }
             } catch {
                 await MainActor.run {
                     self.setStatus("Update failed: \(error.localizedDescription)", error: true)
@@ -592,9 +628,10 @@ private final class AppModel: ObservableObject {
     // place and relaunches it. The new app then updates the Spotlight importer on launch
     // (autoInstallOrUpdateImporter).
     //
-    // A downgrade removes the installed importer first: the older app never replaces a newer
-    // importer, but installs a missing one on launch. If the swap fails, the restored app does too.
-    private func swapInUpdate(_ newApp: URL, version: String, downgrade: Bool = false) {
+    // A reinstall or downgrade removes the installed importer first: an older or equal app never
+    // replaces the installed importer, but installs a missing one on launch. If the swap fails,
+    // the restored app does too.
+    private func swapInUpdate(_ newApp: URL, version: String, replaceImporter: Bool = false) {
         let installed = Bundle.main.bundleURL
         let workDir = newApp.deletingLastPathComponent().deletingLastPathComponent()
         let trash = workDir.appendingPathComponent("previous-\(currentVersion()).app")
@@ -612,7 +649,7 @@ private final class AppModel: ObservableObject {
             setStatus("Update failed: could not start the installer helper.", error: true)
             return
         }
-        if downgrade, fm.fileExists(atPath: spotlightDst.path) {
+        if replaceImporter, fm.fileExists(atPath: spotlightDst.path) {
             try? fm.removeItem(at: spotlightDst)
         }
         setStatus("Installing \(version); the app restarts.")
@@ -1297,6 +1334,12 @@ private struct ContentView: View {
                 Button("Check for Updates Now") {
                     model.checkForUpdates(manual: true)
                 }
+                Button("Reinstall Latest Release…") {
+                    model.reinstallLatestRelease()
+                }
+                Text("Installs the latest release of the selected channel (last beta on Beta, last stable on Stable), even if it is not newer than this version.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if model.isPreReleaseBuild {
                     Button("Downgrade to Stable…") {
                         model.downgradeToStable()

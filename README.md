@@ -120,6 +120,8 @@ When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `I
 
 `Updates` → `Release channel`: `Stable` (default) offers only regular releases; `Beta` also offers pre-releases (tags like `v0.8.0-beta.1`, published as GitHub pre-releases, signed and installed the same way). Switching back to `Stable` never downgrades: a beta stays installed until a newer stable release is out (e.g. `0.8.0` after `0.8.0-beta.2`). Apps older than 0.7.0-beta.1 only see stable releases.
 
+`Updates` → `Reinstall Latest Release…` installs the latest release of the selected channel (last beta on `Beta`, last stable on `Stable`) even when it is not newer than the running version, with the same signature checks, and replaces the Spotlight importer: useful to get back to an official build or to repair an install.
+
 To leave a beta right away, use `Updates` → `Downgrade to Stable…` (beta builds from 0.7.1-beta.1 on): it installs the newest stable release with the same signature checks, switches the channel to Stable, and replaces the Spotlight importer with the stable one.
 
 Signing for maintainers: `swift scripts/sign_update.swift keygen` creates a key pair once. The private key goes into the GitHub secret `PARQUET_UPDATE_SIGNING_KEY` (the release workflow then uploads `Parquet-Spotlight-<version>.zip.sig`), the public key into `ParquetUpdatePublicKey` in `preview/app/Info.plist`.

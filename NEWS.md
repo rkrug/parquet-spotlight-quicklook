@@ -4,6 +4,7 @@
 
 ### Changes
 
+- `Updates` → `Reinstall Latest Release…` installs the latest release of your channel (last beta or last stable), e.g. to get back to an official build or repair an install.
 - The Quick Look preview says where its settings are: in Parquet Quick Look and Index (⌘,).
 
 ## 0.7.1 - 2026-10-24
