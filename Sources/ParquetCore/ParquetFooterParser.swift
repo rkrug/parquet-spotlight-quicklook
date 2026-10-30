@@ -184,7 +184,7 @@ public enum ParquetFooter {
         var repetition: Int64 = 0
         let type: Int32?
         let convertedType: Int32?
-        let logicalType: String?
+        var logicalType: String?
         let numChildren: Int
     }
 
@@ -482,6 +482,8 @@ public enum ParquetFooter {
         var numChildren = 0
         var typeLength = 0
         var repetition: Int64 = 0
+        var scale: Int64?
+        var precision: Int64?
 
         while let (fieldID, fieldType) = try parser.readFieldHeader(lastFieldID: &lastFieldID) {
             switch fieldID {
@@ -495,6 +497,10 @@ public enum ParquetFooter {
                 typeLength = v > 0 && v <= Int64(Int32.max) ? Int(v) : 0
             case 3:
                 repetition = try parser.readInt64ForType(fieldType)
+            case 7:
+                scale = try parser.readInt64ForType(fieldType)
+            case 8:
+                precision = try parser.readInt64ForType(fieldType)
             case 6:
                 let v = try parser.readInt64ForType(fieldType)
                 if v >= Int64(Int32.min), v <= Int64(Int32.max) {
@@ -532,6 +538,10 @@ public enum ParquetFooter {
         )
         element.typeLength = typeLength
         element.repetition = repetition
+        // Legacy decimals (converted type only) keep precision and scale in the element itself.
+        if logicalType == nil, convertedType == 5, let p = precision, let s = scale {
+            element.logicalType = "DECIMAL(\(p),\(s))"
+        }
         return element
     }
 
@@ -982,24 +992,24 @@ public enum ParquetFooter {
         case 1: return "MAP"
         case 2: return "MAP_KEY_VALUE"
         case 3: return "LIST"
-        case 5: return "ENUM"
-        case 6: return "DECIMAL"
-        case 7: return "DATE"
-        case 8: return "TIME_MILLIS"
-        case 9: return "TIME_MICROS"
-        case 10: return "TIMESTAMP_MILLIS"
-        case 11: return "TIMESTAMP_MICROS"
-        case 12: return "UINT_8"
-        case 13: return "UINT_16"
-        case 14: return "UINT_32"
-        case 15: return "UINT_64"
-        case 16: return "INT_8"
-        case 17: return "INT_16"
-        case 18: return "INT_32"
-        case 19: return "INT_64"
-        case 20: return "JSON"
-        case 21: return "BSON"
-        case 22: return "INTERVAL"
+        case 4: return "ENUM"
+        case 5: return "DECIMAL"
+        case 6: return "DATE"
+        case 7: return "TIME_MILLIS"
+        case 8: return "TIME_MICROS"
+        case 9: return "TIMESTAMP_MILLIS"
+        case 10: return "TIMESTAMP_MICROS"
+        case 11: return "UINT_8"
+        case 12: return "UINT_16"
+        case 13: return "UINT_32"
+        case 14: return "UINT_64"
+        case 15: return "INT_8"
+        case 16: return "INT_16"
+        case 17: return "INT_32"
+        case 18: return "INT_64"
+        case 19: return "JSON"
+        case 20: return "BSON"
+        case 21: return "INTERVAL"
         default: return nil
         }
     }

@@ -128,6 +128,23 @@ record("nested_rows.parquet", c("id", "l_str.list.element", "l_struct.list.eleme
                                 "m.key_value.key", "m.key_value.value", "s.x", "s.inner.y",
                                 "ll.list.element.list.element"))
 
+# Parquet format 2 pages from DuckDB (DATA_PAGE_V2, DELTA_BINARY_PACKED for integers, dates and
+# list elements, DELTA_LENGTH_BYTE_ARRAY for strings, BYTE_STREAM_SPLIT for float and double),
+# SNAPPY and BROTLI; 250 rows in row groups of 100. Row i: i32 = i, i64 = i * 1e10,
+# flt = i * 0.5, s = sin(i), str = "row-<i>" (null when i %% 7 == 0), d = 2020-01-01 + i days,
+# tags = [i, i + 1]. Needs the duckdb R package.
+if (requireNamespace("duckdb", quietly = TRUE)) {
+  con <- DBI::dbConnect(duckdb::duckdb())
+  DBI::dbExecute(con, "CREATE TABLE v2 AS SELECT i::INTEGER AS i32, (i * 10000000000)::BIGINT AS i64,
+    (i * 0.5)::FLOAT AS flt, sin(i) AS s, CASE WHEN i % 7 = 0 THEN NULL ELSE 'row-' || i END AS str,
+    DATE '2020-01-01' + i::INTEGER AS d, [i::INTEGER, (i + 1)::INTEGER] AS tags FROM range(1, 251) r(i)")
+  for (codec in c("snappy", "brotli")) {
+    DBI::dbExecute(con, sprintf("COPY v2 TO %s (FORMAT parquet, PARQUET_VERSION V2, ROW_GROUP_SIZE 100, COMPRESSION %s)",
+                                DBI::dbQuoteString(con, file.path(dir, paste0("rows_v2_", codec, ".parquet"))), codec))
+  }
+  DBI::dbDisconnect(con, shutdown = TRUE)
+}
+
 # Not a Parquet file: the trailer of a cut-off file is missing.
 bytes <- readBin(file.path(dir, "flat.parquet"), "raw", n = 64)
 writeBin(bytes, file.path(dir, "truncated.parquet"))

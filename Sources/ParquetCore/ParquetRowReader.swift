@@ -443,6 +443,7 @@ public enum ParquetRowReader {
                 : nil
             let rest = body[(body.startIndex + levelBytes)...]
             let valuesSize = header.uncompressedSize - levelBytes
+            if header.valuesCompressed && valuesSize > limit && header.encoding == 9 { throw ReadError(message: tooLargeMessage) }
             let values = header.valuesCompressed
                 ? try decompress(rest, codec: codec, size: valuesSize, limit: limit)[...]
                 : rest
@@ -452,6 +453,8 @@ public enum ParquetRowReader {
 
         // DATA_PAGE (v1): everything compressed; each level section has a 4-byte length prefix.
         let truncated = header.uncompressedSize > limit
+        // BYTE_STREAM_SPLIT finds its streams from the section length: a cut page would decode wrong.
+        if truncated && header.encoding == 9 { throw ReadError(message: tooLargeMessage) }
         let page = try decompress(body, codec: codec, size: header.uncompressedSize, limit: limit)
         var position = 0
         func levels(_ decode: (ArraySlice<UInt8>) throws -> [Int]) throws -> [Int] {
@@ -714,6 +717,15 @@ public enum ParquetRowReader {
             guard length >= 0, 4 + length <= bytes.count else { throw ReadError(message: "invalid RLE booleans") }
             let start = bytes.startIndex + 4
             return try hybrid(bytes[start..<(start + length)], bitWidth: 1, count: count).map { .bool($0 != 0) }
+        case 5 where column.physicalType == "INT32" || column.physicalType == "INT64": // DELTA_BINARY_PACKED
+            let values = try deltaBinaryPacked(bytes, limit: count).values
+            return values.map { column.physicalType == "INT32" ? .int32(Int32(truncatingIfNeeded: $0)) : .int64($0) }
+        case 6 where column.physicalType == "BYTE_ARRAY": // DELTA_LENGTH_BYTE_ARRAY
+            return try deltaLengthByteArray(bytes, limit: count).values.map { .bytes(Array($0)) }
+        case 7 where column.physicalType == "BYTE_ARRAY" || column.physicalType == "FIXED_LEN_BYTE_ARRAY": // DELTA_BYTE_ARRAY
+            return try deltaByteArray(bytes, limit: count).map { .bytes($0) }
+        case 9: // BYTE_STREAM_SPLIT
+            return try byteStreamSplit(bytes, count: count, column: column)
         default:
             throw ReadError(message: "\(encodingName(encoding)) encoding is not supported by the preview yet")
         }
@@ -728,6 +740,124 @@ public enum ParquetRowReader {
         case 7: return "DELTA_BYTE_ARRAY"
         case 9: return "BYTE_STREAM_SPLIT"
         default: return "encoding \(encoding)"
+        }
+    }
+
+    // DELTA_BINARY_PACKED: header <block size> <miniblocks per block> <total count> <first value>,
+    // then blocks of <min delta> <bit width per miniblock> <bit-packed (delta - min delta)>.
+    // Decodes the first `limit` values (all with limit == nil, as length sections need) and
+    // returns where the encoded data ends (after the last miniblock holding a value).
+    static func deltaBinaryPacked(_ bytes: ArraySlice<UInt8>, limit: Int?) throws -> (values: [Int64], end: Int) {
+        var p = bytes.startIndex
+        func varint() throws -> UInt64 {
+            var result: UInt64 = 0
+            var shift: UInt64 = 0
+            while true {
+                guard p < bytes.endIndex, shift <= 63 else { throw ReadError(message: "invalid DELTA_BINARY_PACKED data") }
+                let b = bytes[p]
+                p += 1
+                result |= UInt64(b & 0x7f) << shift
+                if b & 0x80 == 0 { return result }
+                shift += 7
+            }
+        }
+        func zigzag() throws -> Int64 {
+            let v = try varint()
+            return Int64(bitPattern: (v >> 1) ^ (~(v & 1) &+ 1))
+        }
+        let blockSize = try varint(), miniblocks = try varint(), total = try varint()
+        var last = try zigzag()
+        guard miniblocks > 0, blockSize > 0, blockSize <= 1 << 20, blockSize % 128 == 0,
+              blockSize % miniblocks == 0, (blockSize / miniblocks) % 32 == 0 else {
+            throw ReadError(message: "invalid DELTA_BINARY_PACKED header")
+        }
+        let perMiniblock = Int(blockSize / miniblocks)
+        // `total` comes from the data: decode at most what is asked for, or the page cap.
+        guard limit != nil || total <= UInt64(ParquetParserBounds.maxPreviewPageValues) else { throw ReadError(message: tooLargeMessage) }
+        let wanted = Int(min(total, UInt64(limit ?? Int(total))))
+        var values: [Int64] = []
+        values.reserveCapacity(min(wanted, ParquetParserBounds.maxPreviewPageValues))
+        if wanted > 0 { values.append(last) }
+        var remaining = Int(min(total, UInt64(Int.max))) - 1
+        while values.count < wanted || (limit == nil && remaining > 0) {
+            let minDelta = try zigzag()
+            guard Int(miniblocks) <= bytes.endIndex - p else { throw ReadError(message: "invalid DELTA_BINARY_PACKED data") }
+            let widths = Array(bytes[p..<(p + Int(miniblocks))])
+            p += Int(miniblocks)
+            for width in widths where remaining > 0 {
+                guard width <= 64 else { throw ReadError(message: "invalid DELTA_BINARY_PACKED bit width") }
+                let size = perMiniblock * Int(width) / 8
+                guard size <= bytes.endIndex - p else { throw ReadError(message: "DELTA_BINARY_PACKED data ends early") }
+                for i in 0..<min(perMiniblock, remaining) {
+                    var delta: UInt64 = 0
+                    for b in 0..<Int(width) {
+                        let bit = i * Int(width) + b
+                        if bytes[p + bit / 8] >> (bit % 8) & 1 == 1 { delta |= 1 << UInt64(b) }
+                    }
+                    last = last &+ minDelta &+ Int64(bitPattern: delta)
+                    if values.count < wanted { values.append(last) }
+                }
+                remaining -= min(perMiniblock, remaining)
+                p += size
+            }
+            if remaining == 0 { break }
+        }
+        return (values, p)
+    }
+
+    // DELTA_LENGTH_BYTE_ARRAY: all lengths (DELTA_BINARY_PACKED), then the values back to back.
+    static func deltaLengthByteArray(_ bytes: ArraySlice<UInt8>, limit: Int) throws -> (values: [ArraySlice<UInt8>], end: Int) {
+        let (lengths, start) = try deltaBinaryPacked(bytes, limit: nil)
+        var values: [ArraySlice<UInt8>] = []
+        var p = start
+        for length in lengths {
+            guard length >= 0, length <= Int64(bytes.endIndex - p) else { throw ReadError(message: "invalid DELTA_LENGTH_BYTE_ARRAY data") }
+            if values.count < limit { values.append(bytes[p..<(p + Int(length))]) }
+            p += Int(length)
+        }
+        return (values, p)
+    }
+
+    // DELTA_BYTE_ARRAY: prefix lengths (DELTA_BINARY_PACKED) and suffixes (DELTA_LENGTH_BYTE_ARRAY);
+    // each value is the previous value's first <prefix length> bytes plus its suffix.
+    static func deltaByteArray(_ bytes: ArraySlice<UInt8>, limit: Int) throws -> [[UInt8]] {
+        let (prefixes, suffixStart) = try deltaBinaryPacked(bytes, limit: nil)
+        let suffixes = try deltaLengthByteArray(bytes[suffixStart...], limit: limit).values
+        var values: [[UInt8]] = []
+        var previous: [UInt8] = []
+        for (prefix, suffix) in zip(prefixes, suffixes) {
+            guard prefix >= 0, prefix <= Int64(previous.count) else { throw ReadError(message: "invalid DELTA_BYTE_ARRAY prefix") }
+            previous = Array(previous.prefix(Int(prefix))) + suffix
+            guard previous.count <= ParquetParserBounds.maxPreviewPageBytes else { throw ReadError(message: tooLargeMessage) }
+            values.append(previous)
+        }
+        return values
+    }
+
+    // BYTE_STREAM_SPLIT: byte k of every value is stored in stream k; streams are the section
+    // split into `width` equal parts, so the whole page is needed (a cut page cannot be split).
+    private static func byteStreamSplit(_ bytes: ArraySlice<UInt8>, count: Int, column: ParquetFooter.Column) throws -> [Raw] {
+        let width: Int
+        switch column.physicalType {
+        case "FLOAT", "INT32": width = 4
+        case "DOUBLE", "INT64": width = 8
+        case "FIXED_LEN_BYTE_ARRAY": width = column.typeLength
+        default: throw ReadError(message: "BYTE_STREAM_SPLIT encoding is not supported by the preview for this type")
+        }
+        guard width > 0, bytes.count % width == 0, count <= bytes.count / width else {
+            throw ReadError(message: "invalid BYTE_STREAM_SPLIT data")
+        }
+        let stride = bytes.count / width
+        return (0..<count).map { i in
+            let value = (0..<width).map { k in bytes[bytes.startIndex + k * stride + i] }
+            let little = value.reversed().reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            switch column.physicalType {
+            case "FLOAT": return .float(Float(bitPattern: UInt32(truncatingIfNeeded: little)))
+            case "DOUBLE": return .double(Double(bitPattern: little))
+            case "INT32": return .int32(Int32(truncatingIfNeeded: little))
+            case "INT64": return .int64(Int64(bitPattern: little))
+            default: return .bytes(value)
+            }
         }
     }
 

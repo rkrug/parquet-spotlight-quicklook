@@ -396,6 +396,50 @@ private func runRowReaderTests(fixturesDir: String) {
     let one = ParquetRowReader.readDataset(at: ds, maxRows: 10, maxColumns: 100, maxFiles: 10, recursive: true)
     assertEqual(one.sourceFiles, 1, "dataset: stops after the rows are found")
 
+    // Parquet format 2 from DuckDB: DATA_PAGE_V2, DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY,
+    // BYTE_STREAM_SPLIT (float and double), converted types only, SNAPPY and BROTLI.
+    let dayFormat = DateFormatter()
+    dayFormat.locale = Locale(identifier: "en_US_POSIX")
+    dayFormat.timeZone = TimeZone(identifier: "UTC")
+    dayFormat.dateFormat = "yyyy-MM-dd"
+    for file in ["rows_v2_snappy", "rows_v2_brotli"] {
+        let url = URL(fileURLWithPath: "\(fixturesDir)/\(file).parquet")
+        let t = ParquetRowReader.read(at: url, maxRows: 1000, maxColumns: 100)
+        assertEqual(t.columns, ["i32", "i64", "flt", "s", "str", "d", "tags"], "\(file): columns")
+        assertTrue(t.notes.isEmpty, "\(file): no notes, got \(t.notes)")
+        assertEqual(t.rows.count, 250, "\(file): rows")
+        for (r, row) in t.rows.enumerated() {
+            let i = r + 1
+            let expected: [String?] = [
+                "\(i)", "\(i * 10_000_000_000)", "\(Float(i) * 0.5)", nil,
+                i % 7 == 0 ? nil : "row-\(i)",
+                dayFormat.string(from: Date(timeIntervalSince1970: TimeInterval(1_577_836_800 + i * 86_400))),
+                "[\"\(i)\",\"\(i + 1)\"]",
+            ]
+            var shown = row
+            shown[3] = nil
+            if shown != expected { assertTrue(false, "\(file): row \(i) is \(row), expected \(expected) (s aside)") }
+            assertTrue(abs((Double(row[3] ?? "") ?? .nan) - sin(Double(i))) < 1e-12, "\(file): row \(i) s = sin(i)")
+        }
+        let cut = ParquetRowReader.read(at: url, maxRows: 5, maxColumns: 100, pageByteLimit: 64)
+        assertTrue(cut.rows.count == 5 && cut.rows.allSatisfy { $0[0] != nil }, "\(file): page starts still read")
+        let types = ParquetFooter.read(at: url).columns.map(\.logicalType)
+        assertEqual(types, ["int32", "int64", "float", "double", "string", "date32[day]", "int32"], "\(file): converted-type labels")
+    }
+
+    // DELTA_BYTE_ARRAY, the specification's example ("axis", "axle", "babble", "babyhood"), encoded
+    // by hand: prefix lengths [0, 2, 0, 3] and suffix lengths [4, 2, 6, 5] as DELTA_BINARY_PACKED
+    // (block 128, 4 miniblocks; first value, min delta -2 (zigzag 3), deltas packed in 3 bits),
+    // then the suffixes "axis" "le" "babble" "yhood".
+    let header: [UInt8] = [0x80, 0x01, 0x04, 0x04]
+    let prefixes: [UInt8] = header + [0x00, 0x03, 3, 0, 0, 0, 0x44, 0x01] + Array(repeating: 0, count: 10)
+    let lengths: [UInt8] = header + [0x08, 0x03, 3, 0, 0, 0, 0x70, 0x00] + Array(repeating: 0, count: 10)
+    let deltaBytes = prefixes + lengths + Array("axisleba".utf8) + Array("bbleyhood".utf8)
+    let words = (try? ParquetRowReader.deltaByteArray(deltaBytes[...], limit: 4)) ?? []
+    assertEqual(words.map { String(decoding: $0, as: UTF8.self) }, ["axis", "axle", "babble", "babyhood"], "DELTA_BYTE_ARRAY spec example")
+    assertEqual((try? ParquetRowReader.deltaBinaryPacked(prefixes[...], limit: nil))?.values ?? [], [0, 2, 0, 3], "DELTA_BINARY_PACKED prefix lengths")
+    assertEqual((try? ParquetRowReader.deltaBinaryPacked(lengths[...], limit: 2))?.values ?? [], [4, 2], "DELTA_BINARY_PACKED limit")
+
     // Large pages: only their start is decompressed. With a 64-byte limit every page here is
     // "large", and the first rows still match; with 30 bytes some columns run out and say so.
     for file in ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_uncompressed", "nested_rows"] {
@@ -512,14 +556,14 @@ private func runCorruptedPageTests(fixturesDir: String) {
     let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parquet-page-fuzz-\(getpid()).parquet")
     defer { try? FileManager.default.removeItem(at: tmp) }
 
-    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_plain", "rows_uncompressed", "rows_int96", "nested_rows"].compactMap { name in
+    let originals: [(name: String, bytes: [UInt8], footerStart: Int)] = ["rows_snappy", "rows_gzip", "rows_lz4", "rows_zstd", "rows_plain", "rows_uncompressed", "rows_int96", "nested_rows", "rows_v2_snappy", "rows_v2_brotli"].compactMap { name in
         guard let data = FileManager.default.contents(atPath: "\(fixturesDir)/\(name).parquet") else { return nil }
         let b = [UInt8](data)
         let n = b.count
         let len = Int(b[n - 8]) | Int(b[n - 7]) << 8 | Int(b[n - 6]) << 16 | Int(b[n - 5]) << 24
         return (name, b, n - 8 - len)
     }
-    assertEqual(originals.count, 8, "page fuzz: fixtures readable")
+    assertEqual(originals.count, 10, "page fuzz: fixtures readable")
 
     var slowest = 0.0
     for i in 0..<cases {
