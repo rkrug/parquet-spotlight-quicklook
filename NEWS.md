@@ -1,5 +1,11 @@
 # News
 
+## Unreleased
+
+### Changes
+
+- The Quick Look preview says where its settings are: in Parquet Quick Look and Index (⌘,).
+
 ## 0.7.1 - 2026-10-24
 
 First stable release since 0.6.0; includes 0.7.0-beta.1 and 0.7.1-beta.1.

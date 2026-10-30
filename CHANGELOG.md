@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Quick Look preview: hint next to `Show JSON` on where the settings are (the app, ⌘,). A Settings button is not possible: Quick Look previews cannot open links or URL schemes (plain links, `window.open`, `location` and iframes are all blocked).
+
 ## 0.7.1 - 2026-10-24
 
 - Stable release of 0.7.1-beta.1 (and 0.7.0-beta.1); bumped importer, app, and extension builds to `15`, `ParquetReleaseVersion` is `0.7.1`.

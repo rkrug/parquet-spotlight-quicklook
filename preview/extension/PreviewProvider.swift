@@ -591,6 +591,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           <div class=\"muted\">\(esc(path))</div>
           <div class=\"toolbar\">
             <button id=\"json-btn\" class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+            <span class=\"muted\" style=\"margin-left:10px\">Settings: open Parquet Quick Look and Index, then ⌘,</span>
           </div>
           <div id=\"export-pane\" class=\"export-pane\">
             <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
@@ -843,6 +844,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
           <div class=\"muted\">\(esc(path))</div>
           <div class=\"toolbar\">
             <button id=\"json-btn\" class=\"sub-btn\" onclick=\"showSchemaPane();return false;\">Show JSON</button>
+            <span class=\"muted\" style=\"margin-left:10px\">Settings: open Parquet Quick Look and Index, then ⌘,</span>
           </div>
           <div id=\"export-pane\" class=\"export-pane\">
             <div class=\"muted\" style=\"margin-bottom:6px\">If download is blocked by Quick Look, copy the schema JSON from here.</div>
