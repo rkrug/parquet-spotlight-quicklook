@@ -21,6 +21,8 @@ public enum ParquetRowReader {
     }
 
     public static let nestedPlaceholder = "‹nested›"
+    // Cells of a column that could not be read (see notes); distinct from null.
+    public static let unreadablePlaceholder = "‹not read›"
 
     public static func read(at url: URL, maxRows: Int, maxColumns: Int) -> Table {
         var table = Table()
@@ -68,6 +70,7 @@ public enum ParquetRowReader {
                 continue
             }
             var values: [String?] = []
+            var failed = false
             do {
                 for group in summary.previewRowGroups where values.count < rowCount {
                     guard field.leaves[0] < group.chunks.count else { break }
@@ -79,10 +82,12 @@ public enum ParquetRowReader {
                 }
             } catch let error as ReadError {
                 note(error.message, field.name)
+                failed = true
             } catch {
                 note("could not be read", field.name)
+                failed = true
             }
-            values += Array(repeating: nil, count: max(0, rowCount - values.count))
+            values += Array(repeating: failed ? unreadablePlaceholder : nil, count: max(0, rowCount - values.count))
             cells.append(Array(values.prefix(rowCount)))
         }
 

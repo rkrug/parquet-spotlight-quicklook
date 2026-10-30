@@ -1,5 +1,11 @@
 # News
 
+## Unreleased
+
+### Changes
+
+- Quick Look has a `Data` tab with the first rows of the file (100 by default, up to 10,000, set in the app's Quick Look Settings). Nested columns and ZSTD-compressed files are not shown yet.
+
 ## 0.7.2-beta.1 - 2026-10-30 (pre-release)
 
 ### Changes

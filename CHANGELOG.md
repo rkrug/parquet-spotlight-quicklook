@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Quick Look Data tab (#25, step 1): `ParquetRowReader` (`Sources/ParquetCore`) reads the first n rows of flat top-level columns: page headers (v1, v2), SNAPPY (own decoder), GZIP / LZ4_RAW / BROTLI / legacy Hadoop LZ4 via Apple's Compression, PLAIN and dictionary encodings, definition levels; formatting of dates, timestamps (incl. INT96), decimals of any width, UUIDs and binary. Nested columns show `‹nested›`; unsupported codecs (ZSTD for now) and encodings (DELTA_*, BYTE_STREAM_SPLIT) show `‹not read›` with one note per problem. Bounds in `ParquetParserBounds` (`maxPreview*`). The footer parser keeps chunk locations of the leading row groups and per-column nesting levels.
+- Preview: `Schema` | `Data` tabs; the Data tab embeds the rows as JSON and draws only the visible rows; click a cell for its full value. Settings: `Show the first rows in a Data tab`, `Rows` (default 100, up to 10,000, cut to 200,000 cells).
+- Fixtures `rows_*.parquet` (codecs, PLAIN-only, INT96) with value checks against the R definitions, and a data-page fuzz test (`PARQUET_FUZZ_PAGE_CASES`).
+
 ## 0.7.2-beta.1 - 2026-10-30 (pre-release)
 
 - Bumped importer, app, and extension versions to `0.7.2` (build 16); the app's `ParquetReleaseVersion` is `0.7.2-beta.1`.

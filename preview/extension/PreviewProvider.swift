@@ -26,6 +26,8 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         var scanAllFiles = false
         var maxScanFiles = 500
         var recursiveScan = true
+        var showDataTab = true
+        var previewRows = 100
     }
 
     private struct PreviewSettingsData: Codable {
@@ -37,6 +39,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         let scanAllFiles: Bool
         let maxScanFiles: Int
         let recursiveScan: Bool
+        // Optional: missing in settings written by versions before the Data tab.
+        let showDataTab: Bool?
+        let previewRows: Int?
     }
 
     private final class ColumnTreeNode {
@@ -175,7 +180,9 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
                 hideListElement: decoded.hideListElement,
                 scanAllFiles: decoded.scanAllFiles,
                 maxScanFiles: max(1, decoded.maxScanFiles),
-                recursiveScan: decoded.recursiveScan
+                recursiveScan: decoded.recursiveScan,
+                showDataTab: decoded.showDataTab ?? true,
+                previewRows: max(1, min(decoded.previewRows ?? 100, ParquetParserBounds.maxPreviewRows))
             )
         }
 
@@ -196,6 +203,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             } else {
                 s.recursiveScan = defaults.bool(forKey: "recursiveScan")
             }
+            if defaults.object(forKey: "showDataTab") != nil {
+                s.showDataTab = defaults.bool(forKey: "showDataTab")
+            }
+            let rows = defaults.integer(forKey: "previewRows")
+            if rows > 0 { s.previewRows = min(rows, ParquetParserBounds.maxPreviewRows) }
         }
         return s
     }
@@ -498,6 +510,18 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             .export-actions{margin-top:8px;display:flex;gap:8px}
             .sub-btn{border:1px solid #cbd5e1;background:#fff;color:#111827;border-radius:6px;padding:5px 8px;font-size:11px;cursor:pointer}
             .sub-btn:hover{background:#f3f4f6}
+            .tabs{display:flex;gap:4px;margin:6px 0 10px;border-bottom:1px solid #d1d5db}
+            .tab{border:1px solid transparent;border-bottom:none;background:transparent;color:#4b5563;padding:6px 14px;font-size:12px;cursor:pointer;border-radius:6px 6px 0 0}
+            .tab.active{border-color:#d1d5db;background:#fff;color:#111827;font-weight:600;margin-bottom:-1px}
+            .data-scroll{height:520px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+            table.data{width:auto;min-width:100%}
+            table.data th{position:sticky;top:0;z-index:1;white-space:nowrap}
+            table.data td{height:23px;padding:0 8px;line-height:23px;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:default}
+            table.data td.rn{color:#9ca3af;text-align:right}
+            table.data td.null{color:#9ca3af;font-style:italic}
+            table.data td.sel{background:#e0ecff}
+            .cell-detail{margin-top:8px;padding:8px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
+            .notes{color:#92400e;margin:4px 0}
             h2{font-size:15px;margin:22px 0 8px}
             details{margin:10px 0}
             summary{cursor:pointer;font-weight:600;padding:4px 0}
@@ -609,11 +633,20 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             <div class=\"card\"><div class=\"label\">Columns</div><div class=\"val\">\(esc(formatInt(Int64(metadata.columns.count))))</div></div>
           </div>
 
+          \(settings.showDataTab && metadata.valid ? """
+          <div class=\"tabs\">
+            <button id=\"tab-btn-schema\" class=\"tab active\" onclick=\"showTab('schema');return false;\">Schema</button>
+            <button id=\"tab-btn-data\" class=\"tab\" onclick=\"showTab('data');return false;\">Data</button>
+          </div>
+          """ : "")
+          <div id=\"tab-schema\">
           <table>
             <thead><tr><th>#</th><th>Column</th><th>Type</th></tr></thead>
             <tbody>\(rows)</tbody>
           </table>
           \(footerDetailsHTML(metadata))
+          </div>
+          \(settings.showDataTab && metadata.valid ? dataTabHTML(path: path, settings: settings) : "")
         </body>
         </html>
         """
@@ -684,6 +717,94 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             html += "<details><summary>Key/value metadata (\(m.keyValueMetadata.count))</summary><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>\(rows)</tbody></table></details>"
         }
         return html
+    }
+
+    // Data tab (#25): the first rows as embedded JSON, drawn by JavaScript only for the visible
+    // part of the scroll area, so thousands of rows stay smooth. Quick Look cannot call back into
+    // the extension, so the rows are fixed when the preview is generated.
+    private func dataTabHTML(path: String, settings: PreviewSettings) -> String {
+        let table = ParquetRowReader.read(
+            at: URL(fileURLWithPath: path),
+            maxRows: settings.previewRows,
+            maxColumns: ParquetParserBounds.maxPreviewColumns
+        )
+        let payload: [String: Any] = [
+            "columns": table.columns,
+            "rows": table.rows.map { row in row.map { cell -> Any in cell ?? NSNull() } },
+        ]
+        let json = (try? JSONSerialization.data(withJSONObject: payload))
+            .map { String(decoding: $0, as: UTF8.self) }?
+            .replacingOccurrences(of: "</", with: "<\\/") ?? "{\"columns\":[],\"rows\":[]}"
+
+        var info = "First \(formatInt(Int64(table.rows.count))) of \(formatInt(table.totalRows)) rows"
+        if table.rows.count < min(settings.previewRows, Int(clamping: table.totalRows)) {
+            info += " (cut to fit \(formatInt(Int64(ParquetParserBounds.maxPreviewCells))) cells)"
+        }
+        if table.hiddenColumns > 0 {
+            info += ", first \(table.columns.count) columns (\(table.hiddenColumns) more not shown)"
+        }
+        info += ". Change the number of rows in Parquet Quick Look and Index (⌘,)."
+        let notes = table.notes.map { "<div class=\"notes\">\(esc($0))</div>" }.joined()
+        let header = (["#"] + table.columns).map { "<th>\(esc($0))</th>" }.joined()
+
+        return """
+          <div id=\"tab-data\" style=\"display:none\">
+            <div class=\"muted\" style=\"margin-bottom:6px\">\(esc(info))</div>
+            \(notes)
+            <div id=\"data-scroll\" class=\"data-scroll\">
+              <table class=\"data\"><thead><tr>\(header)</tr></thead><tbody id=\"data-body\"></tbody></table>
+            </div>
+            <div id=\"cell-detail\" class=\"cell-detail muted\">Click a cell to see its full value.</div>
+          </div>
+          <script>
+            (function(){
+              const D = \(json);
+              const H = 24;
+              const box = document.getElementById('data-scroll');
+              const body = document.getElementById('data-body');
+              const n = D.columns.length;
+              let selected = null;
+              function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+              function render(){
+                const first = Math.max(0, Math.floor(box.scrollTop / H) - 10);
+                const last = Math.min(D.rows.length, first + Math.ceil(box.clientHeight / H) + 30);
+                let html = '<tr><td colspan="' + (n + 1) + '" style="height:' + (first * H) + 'px;padding:0;border:0"></td></tr>';
+                for (let r = first; r < last; r++) {
+                  html += '<tr><td class="rn">' + (r + 1) + '</td>';
+                  const row = D.rows[r];
+                  for (let c = 0; c < n; c++) {
+                    const v = row[c];
+                    const sel = selected && selected[0] === r && selected[1] === c ? ' sel' : '';
+                    html += v === null
+                      ? '<td class="null' + sel + '" data-r="' + r + '" data-c="' + c + '">null</td>'
+                      : '<td class="' + sel + '" data-r="' + r + '" data-c="' + c + '">' + esc(v) + '</td>';
+                  }
+                  html += '</tr>';
+                }
+                html += '<tr><td colspan="' + (n + 1) + '" style="height:' + ((D.rows.length - last) * H) + 'px;padding:0;border:0"></td></tr>';
+                body.innerHTML = html;
+              }
+              box.addEventListener('scroll', render);
+              body.addEventListener('click', function(e){
+                const td = e.target.closest('td[data-r]');
+                if (!td) { return; }
+                const r = +td.dataset.r, c = +td.dataset.c, v = D.rows[r][c];
+                selected = [r, c];
+                const detail = document.getElementById('cell-detail');
+                detail.classList.remove('muted');
+                detail.textContent = D.columns[c] + ' · row ' + (r + 1) + ': ' + (v === null ? 'null' : v);
+                render();
+              });
+              window.showTab = function(name){
+                ['schema', 'data'].forEach(function(t){
+                  document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+                  document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
+                });
+                if (name === 'data') { render(); }
+              };
+            })();
+          </script>
+        """
     }
 
     private func renderDatasetHTML(path: String, dataset: DatasetMetadata, settings: PreviewSettings) -> String {

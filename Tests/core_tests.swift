@@ -348,7 +348,7 @@ private func runRowReaderTests(fixturesDir: String) {
     let zstd = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_zstd.parquet"), maxRows: 10, maxColumns: 100)
     assertEqual(zstd.notes.count, 1, "unsupported codec: one grouped note")
     assertTrue(zstd.notes.first?.hasPrefix("codec ZSTD not supported yet: i32, i64") ?? false, "unsupported codec: note names the columns")
-    assertTrue(zstd.rows.allSatisfy { $0[0] == nil && $0[13] == ParquetRowReader.nestedPlaceholder }, "unsupported codec: nulls, nested still placeholders")
+    assertTrue(zstd.rows.allSatisfy { $0[0] == ParquetRowReader.unreadablePlaceholder && $0[13] == ParquetRowReader.nestedPlaceholder }, "unsupported codec: placeholders, not nulls")
 
     let int96 = ParquetRowReader.read(at: URL(fileURLWithPath: "\(fixturesDir)/rows_int96.parquet"), maxRows: 250, maxColumns: 10)
     assertEqual(int96.rows.map { $0[0] }, (1...250).map { expectedRow($0)[8].map { $0 + "000" } }, "INT96 timestamps (ns digits)")

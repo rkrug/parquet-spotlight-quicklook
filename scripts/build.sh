@@ -156,6 +156,7 @@ swift_universal "$APPEX_MACOS_DIR/ParquetQuickLookExtension" \
   "$ROOT_DIR/Sources/ParquetCore/ParserBounds.swift" \
   "$ROOT_DIR/Sources/ParquetCore/ParquetFooterParser.swift" \
   "$ROOT_DIR/Sources/ParquetCore/ParquetDataset.swift" \
+  "$ROOT_DIR/Sources/ParquetCore/ParquetRowReader.swift" \
   "$ROOT_DIR/preview/extension/PreviewProvider.swift" \
   "$BUILD_DIR/NSExtensionMain.o" \
   -framework AppKit \
