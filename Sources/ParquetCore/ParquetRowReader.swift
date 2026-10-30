@@ -839,6 +839,8 @@ public enum ParquetRowReader {
             return try applePrefix(input, algorithm: COMPRESSION_BROTLI, limit: limit)
         case 5:
             return try hadoopLZ4(input, size: size, limit: limit)
+        case 6:
+            return try zstd(input, limit: limit, exact: false)
         case 7:
             return try lz4Block(input, limit: limit)
         default:
@@ -859,6 +861,8 @@ public enum ParquetRowReader {
             return try apple(input, algorithm: COMPRESSION_BROTLI, size: size)
         case 5:
             return try hadoopLZ4(input, size: size, limit: size)
+        case 6:
+            return try zstd(input, limit: size, exact: true)
         case 7:
             return try apple(input, algorithm: COMPRESSION_LZ4_RAW, size: size)
         default:
@@ -870,7 +874,6 @@ public enum ParquetRowReader {
         let name: String
         switch codec {
         case 3: name = "LZO"
-        case 6: name = "ZSTD"
         default: name = "codec \(codec)"
         }
         return "\(name) compression is not supported by the preview yet"
@@ -886,6 +889,22 @@ public enum ParquetRowReader {
             }
         }
         guard written == size else { throw ReadError(message: "could not decompress a page") }
+        return out
+    }
+
+    // Vendored zstd decoder (third_party/zstd, parquet_zstd.h): `limit` bytes, which must all be
+    // produced (the whole page when `exact`, else its start).
+    private static func zstd(_ input: ArraySlice<UInt8>, limit: Int, exact: Bool) throws -> [UInt8] {
+        guard limit > 0 else { return [] }
+        var out = [UInt8](repeating: 0, count: limit)
+        let written = input.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst in
+                parquet_zstd_decompress(src.baseAddress, src.count, dst.baseAddress, limit)
+            }
+        }
+        guard written == limit else {
+            throw ReadError(message: exact || written < 0 ? "could not decompress a page" : tooLargeMessage)
+        }
         return out
     }
 
