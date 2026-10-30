@@ -1,6 +1,6 @@
 # News
 
-## Unreleased
+## 0.7.2-beta.1 - 2026-10-30 (pre-release)
 
 ### Changes
 

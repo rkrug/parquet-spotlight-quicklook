@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.7.2-beta.1 - 2026-10-30 (pre-release)
 
+- Bumped importer, app, and extension versions to `0.7.2` (build 16); the app's `ParquetReleaseVersion` is `0.7.2-beta.1`.
 - `Reinstall Latest Release…` in Updates: installs the newest release of the selected channel (last beta on Beta, last stable on Stable) even when it is not newer, through the signed update flow, replacing the Spotlight importer. Shares one flow with `Downgrade to Stable…` (`installRelease`); `installUpdate` / `swapInUpdate` take `replaceImporter`.
 - Quick Look preview: hint next to `Show JSON` on where the settings are (the app, ⌘,). A Settings button is not possible: Quick Look previews cannot open links or URL schemes (plain links, `window.open`, `location` and iframes are all blocked).
 
