@@ -1,26 +1,25 @@
 # parquet_indexer (Spotlight Importer for `.parquet`)
 
 > [!WARNING]
-> **This repository was written completely using Codex.**
-> **Model:** GPT-5 (Codex coding agent)
-> **Version:** Codex GPT-5 session build (2026-03-12)
+> **This repository is written with an AI coding agent: [Claude Code](https://claude.com/claude-code) (Anthropic, Claude Opus 5.5).**
 > It works for me, but I take no guarantee if it works for you.
+
+This README describes the current stable release, **0.7.1**. Pre-releases with newer features are available on the [beta channel](#beta-channel-070-beta1-onwards).
 
 This project provides:
 
-- a macOS Spotlight importer (`.mdimporter`) for Parquet metadata indexing
-- a modern Quick Look preview extension (`.appex`, embedded in a host app) for Parquet metadata preview with:
-  - hierarchical schema tree (collapsible groups)
-  - full parsed column list (no preview truncation)
-  - Arrow-style logical scalar type labels where available
-  - `Export Schema (JSON)` button for Arrow-friendly schema reuse in R/Python
-  - versioned export-scheme envelope (`parquet-quicklook-arrow-schema-v1`) for forward-compatible additional schema formats
+- a macOS Spotlight importer (`.mdimporter`) that indexes Parquet footer metadata: validity, sizes, row and column counts, column names and types, hive partitions, the writer (`created_by`), footer key/value metadata keys, and the date range of date/timestamp columns (from the column statistics)
+- a modern Quick Look preview extension (`.appex`, embedded in a host app) with:
+  - hierarchical schema tree (collapsible groups), the full column list, Arrow-style logical type labels
+  - footer details: writer, row groups, compressed/uncompressed sizes, codec and date range per column, key/value metadata
+  - `Show JSON` / `Copy JSON`: the schema as Arrow-friendly JSON for reuse in R/Python, in a versioned envelope (`parquet-quicklook-arrow-schema-v1`)
+  - dataset folders (and `*.parquet_ds` folders): file and row totals, merged schema, hive partition values
 - a small GUI manager app (`Parquet Quick Look and Index.app`) with:
   - `Re-Install`, `Repair Registration`, and `Uninstall` actions
   - `Copy Diagnostic Report` action for support/issue reports (anonymized)
   - Quick Look rendering settings (schema display + dataset scan controls)
-  - dedicated `Updates` tab for release checks (`Daily`/`Weekly`/`Monthly`)
-  - automatic importer install on app launch if missing
+  - `Updates` tab: automatic checks (`Daily`/`Weekly`/`Monthly`), in-app install of signed updates, `Stable`/`Beta` release channel, `Downgrade to Stable…` on beta builds
+  - automatic importer install and update on app launch
 
 Since `0.3.0`, naming is standardized to Apple's official **Quick Look** terminology.
 
@@ -31,7 +30,7 @@ The importer reads only Parquet footer metadata (`...<metadata_len><PAR1>`), doe
 - **Minimum supported macOS version: 13.0 (Ventura).** Builds are universal (Apple silicon and Intel).
 
 - macOS with Spotlight enabled
-- Xcode Command Line Tools (`xcrun`, `clang`, `codesign`)
+- Xcode Command Line Tools (`xcrun`, `clang`, `swiftc`, `codesign`)
 - shell access (`zsh`)
 - permission to write to `~/Library/Spotlight` and `~/Applications`
 
@@ -73,14 +72,15 @@ Automate build + DMG + GitHub release upload:
 What it does:
 
 - runs `./scripts/generate_icon.sh` and `./scripts/build.sh`
-- creates `release/Parquet-Spotlight-0.6.0.dmg`
-- creates `release/Parquet-Spotlight-0.6.0.zip`
-- creates `release/Parquet-Spotlight-0.6.0.dmg.sha256`
+- creates `release/Parquet-Spotlight-<version>.dmg`, `.zip` and `.dmg.sha256`
 - creates or updates the GitHub release tag and uploads those assets
 - verifies release preflight before packaging:
-  - current branch is `main`
+  - the tag matches the app version (`ParquetReleaseVersion`, else `CFBundleShortVersionString`)
+  - current branch is `main` (`dev` is also allowed for pre-release tags such as `v0.8.0-beta.1`, which become GitHub pre-releases)
   - working tree is clean
-  - local `main` is fully synced with upstream
+  - the branch is fully synced with upstream
+
+Publishing a release also runs `.github/workflows/release.yml`, which builds the assets on GitHub and signs the ZIP for in-app updates (see [Update](#update)).
 
 Optional flags:
 
@@ -119,6 +119,8 @@ When `Check for Updates` (menu or `Updates` tab) finds a newer release, click `I
 ### Beta channel (0.7.0-beta.1 onwards)
 
 `Updates` → `Release channel`: `Stable` (default) offers only regular releases; `Beta` also offers pre-releases (tags like `v0.8.0-beta.1`, published as GitHub pre-releases, signed and installed the same way). Switching back to `Stable` never downgrades: a beta stays installed until a newer stable release is out (e.g. `0.8.0` after `0.8.0-beta.2`). Apps older than 0.7.0-beta.1 only see stable releases.
+
+The current beta, [0.8.0-beta.1](https://github.com/rkrug/parquet-spotlight-quicklook/releases/tag/v0.8.0-beta.1), adds a Quick Look `Data` tab with the first rows of files and datasets (including nested values) and `Reinstall Latest Release…`.
 
 To leave a beta right away, use `Updates` → `Downgrade to Stable…` (beta builds from 0.7.1-beta.1 on): it installs the newest stable release with the same signature checks, switches the channel to Stable, and replaces the Spotlight importer with the stable one.
 
@@ -171,7 +173,7 @@ Use `Parquet Quick Look and Index.app` from `~/Applications` to:
 - repair registration and refresh caches
 - uninstall importer + Quick Look app (including settings cleanup)
 - change preview settings used by Quick Look
-- check for updates (menu item + Updates tab), with `Skip this version` option
+- check for updates (menu item + Updates tab) and install them in the app, with `Skip this version` option
 
 ## Uninstall
 
@@ -266,7 +268,7 @@ Dataset scan behavior is controlled in app settings:
 - `Max files (if not all)`
 - `Recursive scan folders`
 
-7. Run script + core logic test suite:
+7. Run script + core logic test suite (this is what CI runs):
 
 ```bash
 ./scripts/test_scripts.sh
@@ -279,7 +281,7 @@ This also runs:
 ./scripts/test_importer_summary.sh
 ```
 
-`test_core.sh` validates trusted update URL/tag checks, version comparisons, error mapping, diagnostics redaction rules, uninstall argument construction, parser sanity bounds, and the footer parser against the fixtures in `Tests/fixtures`.
+`test_core.sh` validates trusted update URL/tag checks, version and release-channel logic, update signatures, error mapping, diagnostics redaction rules, uninstall argument construction, parser sanity bounds, and the footer parser against the fixtures in `Tests/fixtures`, including a seeded fuzz pass over corrupted footers (`PARQUET_FUZZ_SEED` / `PARQUET_FUZZ_CASES`).
 
 `test_importer_summary.sh` calls the Spotlight importer's entry point on the same fixtures. Both tests compare with `Tests/fixtures/expected.txt`, whose row and column counts come from Apache Arrow; regenerate fixtures with `Rscript Tests/fixtures/make_fixtures.R` (needs the R `arrow` package).
 
@@ -359,7 +361,7 @@ mdimport /path/to/folder
 Use this instead:
 
 ```bash
-pluginkit -m -p com.apple.quicklook.preview | rg parquet
+pluginkit -m -p com.apple.quicklook.preview | grep parquet
 ```
 
 Spotlight indexing via `.mdimporter` is independent and unaffected.
@@ -463,4 +465,4 @@ Keyword tokens written by importer:
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](/Users/rkrug/Documents/GitHub/parquet_indexer/LICENSE).
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
